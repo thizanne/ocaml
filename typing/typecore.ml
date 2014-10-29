@@ -1133,7 +1133,7 @@ and build_as_type_aux (env : Env.t) p =
           newty (Tvariant (create_row ~fields ~fixed ~name
                              ~closed:false ~more:(newvar())))
       end
-  | Tpat_any | Tpat_var _ | Tpat_constant _
+  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_interval _
   | Tpat_array _ | Tpat_lazy _ -> p.pat_type
 
 (* Constraint solving during typing of patterns *)
@@ -2897,6 +2897,11 @@ let rec check_counter_example_pat
   | Tpat_constant cst ->
       let cst = constant_or_raise !!penv loc (Untypeast.constant cst) in
       k @@ solve_expected (mp (Tpat_constant cst) ~pat_type:(type_constant cst))
+  | Tpat_interval (c1, c2) ->
+      let c1 = constant_or_raise !!penv loc (Untypeast.constant c1) in
+      let c2 = constant_or_raise !!penv loc (Untypeast.constant c2) in
+      k @@ solve_expected
+        (mp (Tpat_interval (c1, c2)) ~pat_type:(type_constant c1))
   | Tpat_tuple tpl ->
       assert (List.length tpl >= 2);
       let expected_tys = solve_Ppat_tuple loc penv tpl expected_ty in

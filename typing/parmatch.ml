@@ -450,7 +450,7 @@ let extract_fields lbls arg =
 let simple_match_args discr head args =
   let open Patterns.Head in
   match head.pat_desc with
-  | Constant _ -> []
+  | Constant _ | Interval _ -> []
   | Construct _
   | Variant _
   | Tuple _
@@ -467,7 +467,7 @@ let simple_match_args discr head args =
       | Tuple lbls -> omega_list lbls
       | Variant { has_arg = false }
       | Any
-      | Constant _ -> []
+      | Constant _ | Interval _ -> []
       end
 
 (* Consider a pattern matrix whose first column has been simplified to contain
@@ -587,7 +587,7 @@ let set_args q r = match q with
     make_pat
       (Tpat_array (am, args)) q.pat_type q.pat_env::
     rest
-| {pat_desc=Tpat_constant _|Tpat_any} ->
+| {pat_desc=Tpat_constant _|Tpat_interval _|Tpat_any} ->
     q::r (* case any is used in matching.ml *)
 | {pat_desc = (Tpat_var _ | Tpat_alias _ | Tpat_or _); _} ->
     fatal_error "Parmatch.set_args"
@@ -843,6 +843,7 @@ let full_match closing env =  match env with
   | Constant Const_char _ ->
       List.length env = 256
   | Constant _
+  | Interval _
   | Array _ -> false
   | Tuple _
   | Record _
@@ -866,7 +867,8 @@ let should_extend ext env = match ext with
           let path = get_constructor_type_path p.pat_type p.pat_env in
           Path.same path ext
       | Construct {cstr_tag=(Cstr_extension _)} -> false
-      | Constant _ | Tuple _ | Variant _ | Record _ | Array _ | Lazy -> false
+      | Constant _ | Interval _ | Tuple _ | Variant _ | Record _ | Array _
+      | Lazy -> false
       | Any -> assert false
       end
 end
@@ -1140,7 +1142,8 @@ let build_other ext env =
    instance-less. *)
 let rec has_instance p = match p.pat_desc with
   | Tpat_variant (l,_,r) when is_absent l r -> false
-  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_) -> true
+  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_interval _
+  | Tpat_variant (_,None,_) -> true
   | Tpat_alias (p,_,_,_,_) | Tpat_variant (_,Some p,_) -> has_instance p
   | Tpat_or (p1,p2,_) -> has_instance p1 || has_instance p2
   | Tpat_construct (_,_,ps,_) | Tpat_array (_, ps) ->
@@ -2069,7 +2072,8 @@ let rec collect_paths_from_pat r p = match p.pat_desc with
       collect_paths_from_pat
       (if extendable_path path then add_path path r else r)
       ps
-| Tpat_any|Tpat_var _|Tpat_constant _| Tpat_variant (_,None,_) -> r
+| Tpat_any|Tpat_var _|Tpat_constant _|Tpat_interval _
+| Tpat_variant (_,None,_) -> r
 | Tpat_tuple ps ->
     List.fold_left (fun r (_, p) -> collect_paths_from_pat r p) r ps
 | Tpat_array (_, ps) | Tpat_construct (_, {cstr_tag=Cstr_extension _}, ps, _)->
@@ -2214,6 +2218,7 @@ let inactive ~partial pat =
             | Const_int _ | Const_char _ | Const_float _
             | Const_int32 _ | Const_int64 _ | Const_nativeint _ -> true
           end
+        | Tpat_interval _ -> true
         | Tpat_tuple ps ->
             List.for_all (fun (_,p) -> loop p) ps
         | Tpat_construct (_, _, ps, _) | Tpat_array (Immutable, ps) ->

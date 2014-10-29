@@ -86,6 +86,13 @@ and 'k pattern_desc =
         (** P as a *)
   | Tpat_constant : constant -> value pattern_desc
         (** 1, 'a', "true", 1.0, 1l, 1L, 1n *)
+  | Tpat_interval : constant * constant -> value pattern_desc
+        (** 1 .. 10, 0l .. 100l, 0L .. 100L, 0n .. 100n
+            Only produced for int, int32, int64, and nativeint;
+            char intervals are expanded to or-patterns, and an
+            interval with equal bounds is a [Tpat_constant].
+            Invariant: first constant < second constant
+            (strictly, in [Parmatch.const_compare] order). *)
   | Tpat_tuple :
       (string option * value general_pattern) list -> value pattern_desc
         (** (P1, ..., Pn)                  [(None,P1); ...; (None,Pn)])

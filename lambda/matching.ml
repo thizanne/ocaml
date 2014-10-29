@@ -342,8 +342,8 @@ end = struct
           | `Or _ as or_view -> stop orpat or_view
           | other_view -> continue orpat other_view
         )
-      | ( `Constant _ | `Tuple _ | `Construct _ | `Variant _ | `Array _
-        | `Lazy _ ) as view ->
+      | ( `Constant _ | `Interval _ | `Tuple _ | `Construct _ | `Variant _
+        | `Array _ | `Lazy _ ) as view ->
           stop p view
     in
     aux cl
@@ -377,6 +377,7 @@ end = struct
       match p.pat_desc with
       | `Any -> `Any
       | `Constant cst -> `Constant cst
+      | `Interval itv -> `Interval itv
       | `Tuple ps ->
           `Tuple (List.map (fun (label, p) -> label, alpha_pat env p) ps)
       | `Construct (cstr, cst_descr, args) ->
@@ -525,11 +526,14 @@ let matcher discr (p : Simple.pattern) rem =
   let open Patterns.Head in
   match (discr.pat_desc, ph.pat_desc) with
   | Any, _ -> rem
-  | ( ( Constant _ | Construct _ | Variant _ | Lazy | Array _ | Record _
-      | Tuple _ ),
+  | ( ( Constant _ | Interval _ | Construct _ | Variant _ | Lazy | Array _
+      | Record _ | Tuple _ ),
       Any ) ->
       omegas @ rem
   | Constant cst, Constant cst' -> yesif (const_compare cst cst' = 0)
+  | Interval _, _ | _, Interval _ ->
+      (* Intervals are not yet produced; this will be filled in later *)
+      no ()
   | Constant _, (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _)
     ->
       no ()
@@ -1503,7 +1507,8 @@ let can_group discr pat =
   | Constant (Const_float _), Constant (Const_float _)
   | Constant (Const_int32 _), Constant (Const_int32 _)
   | Constant (Const_int64 _), Constant (Const_int64 _)
-  | Constant (Const_nativeint _), Constant (Const_nativeint _) ->
+  | Constant (Const_nativeint _), Constant (Const_nativeint _)
+  | Interval _, Interval _ ->
       true
   | Construct { cstr_tag = Cstr_extension (p1, _) },
     Construct { cstr_tag = Cstr_extension (p2, _) }
@@ -1526,6 +1531,7 @@ let can_group discr pat =
       | Constant
           ( Const_int _ | Const_char _ | Const_string _ | Const_float _
           | Const_int32 _ | Const_int64 _ | Const_nativeint _ )
+      | Interval _
       | Construct _ | Tuple _ | Record _ | Array _ | Variant _ | Lazy ) ) ->
       false
 
@@ -4078,6 +4084,9 @@ and do_compile_matching ~scopes repr partial ctx pmh =
           compile_test
             divide_constant
             (combine_constant ploc arg cst arg_partial)
+      | Interval _ ->
+          (* Intervals not yet compiled; will be handled in a later commit *)
+          fatal_error "Matching.do_compile_matching: Interval"
       | Construct cstr ->
           compile_test
             (divide_constructor ~scopes)
@@ -4424,7 +4433,8 @@ let flatten_simple_pattern size (p : Simple.pattern) =
   | `Record _
   | `Lazy _
   | `Construct _
-  | `Constant _ ->
+  | `Constant _
+  | `Interval _ ->
       (* All calls to this function originate from [do_for_multiple_match],
          where we know that the scrutinee is a tuple literal.
 

@@ -327,6 +327,7 @@ let pattern : type k . _ -> k T.general_pattern -> _ = fun sub pat ->
     | Tpat_alias (pat, _id, name, _, _ty) ->
         Ppat_alias (sub.pat sub pat, name)
     | Tpat_constant cst -> Ppat_constant (constant cst)
+    | Tpat_interval (c1, c2) -> Ppat_interval (constant c1, constant c2)
     | Tpat_tuple list ->
         Ppat_tuple
           (List.map (fun (label, p) -> label, sub.pat sub p) list, Closed)
