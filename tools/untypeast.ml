@@ -202,6 +202,7 @@ and untype_pattern pat =
     | Tpat_alias (pat, _id, name) ->
         Ppat_alias (untype_pattern pat, name)
     | Tpat_constant cst -> Ppat_constant cst
+    | Tpat_interval (cst1, cst2) -> Ppat_interval (cst1, cst2)
     | Tpat_tuple list ->
         Ppat_tuple (List.map untype_pattern list)
     | Tpat_construct (lid, _, args) ->

@@ -84,7 +84,8 @@ let pattern sub pat =
   match pat.pat_desc with
   | Tpat_any
   | Tpat_var _
-  | Tpat_constant _ -> ()
+  | Tpat_constant _
+  | Tpat_interval _ -> ()
   | Tpat_tuple l
   | Tpat_construct (_, _, l) -> List.iter (sub # pattern) l
   | Tpat_variant (_, po, _) -> opt (sub # pattern) po

@@ -249,6 +249,7 @@ module MakeMap(Map : MapArgument) = struct
           Tpat_or (map_pattern p1, map_pattern p2, rowo)
         | Tpat_lazy p -> Tpat_lazy (map_pattern p)
         | Tpat_constant _
+        | Tpat_interval _
         | Tpat_any
         | Tpat_var _ -> pat.pat_desc
 

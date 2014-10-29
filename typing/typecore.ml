@@ -522,7 +522,7 @@ let rec build_as_type env p =
           let row = row_repr row in
           newty (Tvariant{row with row_closed=false; row_more=newvar()})
       end
-  | Tpat_any | Tpat_var _ | Tpat_constant _
+  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_interval _
   | Tpat_array _ | Tpat_lazy _ -> p.pat_type
 
 let build_or_pat env loc lid =
@@ -996,22 +996,30 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         pat_type = expected_ty;
         pat_attributes = sp.ppat_attributes;
         pat_env = !env }
-  | Ppat_interval (Const_char c1, Const_char c2) ->
-      let open Ast_helper.Pat in
-      let gloc = {loc with Location.loc_ghost=true} in
-      let rec loop c1 c2 =
-        if c1 = c2 then constant ~loc:gloc (Const_char c1)
-        else
-          or_ ~loc:gloc
-            (constant ~loc:gloc (Const_char c1))
-            (loop (Char.chr(Char.code c1 + 1)) c2)
-      in
-      let p = if c1 <= c2 then loop c1 c2 else loop c2 c1 in
-      let p = {p with ppat_loc=loc} in
-      type_pat p expected_ty
-        (* TODO: record 'extra' to remember about interval *)
-  | Ppat_interval _ ->
-      raise (Error (loc, !env, Invalid_interval))
+  | Ppat_interval (cst, cst') when cst = cst' ->
+      unify_pat_types loc !env (type_constant cst) expected_ty;
+      rp {
+        pat_desc = Tpat_constant cst;
+        pat_loc = loc; pat_extra=[];
+        pat_type = expected_ty;
+        pat_attributes = sp.ppat_attributes;
+        pat_env = !env }
+  | Ppat_interval (cst1, cst2) ->
+      begin match cst1, cst2 with
+      | Const_char _, Const_char _
+      | Const_int _, Const_int _
+      | Const_int32 _, Const_int32 _
+      | Const_int64 _, Const_int64 _
+      | Const_nativeint _, Const_nativeint _
+      | _ -> raise (Error (loc, !env, Invalid_interval))
+      end;
+      unify_pat_types loc !env (type_constant cst1) expected_ty;
+      rp {
+        pat_desc = Tpat_interval (min cst1 cst2, max cst1 cst2);
+        pat_loc = loc; pat_extra=[];
+        pat_type = expected_ty;
+        pat_attributes = sp.ppat_attributes;
+        pat_env = !env }
   | Ppat_tuple spl ->
       if List.length spl < 2 then
         Syntaxerr.ill_formed_ast loc "Tuples must have at least 2 components.";
@@ -4018,7 +4026,7 @@ let report_error env ppf = function
         name path tpath
         "must be qualified in this pattern"
   | Invalid_interval ->
-      fprintf ppf "@[Only character intervals are supported in patterns.@]"
+      fprintf ppf "@[Only character or integer intervals are supported in patterns.@]"
   | Invalid_for_loop_index ->
       fprintf ppf
         "@[Invalid for-loop index: only variables and _ are allowed.@]"

@@ -221,6 +221,7 @@ and pattern i ppf x =
       line i ppf "Ppat_alias \"%a\"\n" fmt_ident s;
       pattern i ppf p;
   | Tpat_constant (c) -> line i ppf "Ppat_constant %a\n" fmt_constant c;
+  | Tpat_interval (c1, c2) -> line i ppf "Ppat_interval %a %a\n" fmt_constant c1 fmt_constant c2;
   | Tpat_tuple (l) ->
       line i ppf "Ppat_tuple\n";
       list i pattern ppf l;

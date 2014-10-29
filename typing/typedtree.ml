@@ -43,6 +43,7 @@ and pattern_desc =
   | Tpat_var of Ident.t * string loc
   | Tpat_alias of pattern * Ident.t * string loc
   | Tpat_constant of constant
+  | Tpat_interval of constant * constant
   | Tpat_tuple of pattern list
   | Tpat_construct of
       Longident.t loc * constructor_description * pattern list
@@ -514,7 +515,8 @@ let iter_pattern_desc f = function
   | Tpat_lazy p -> f p
   | Tpat_any
   | Tpat_var _
-  | Tpat_constant _ -> ()
+  | Tpat_constant _
+  | Tpat_interval _ -> ()
 
 let map_pattern_desc f d =
   match d with
@@ -535,6 +537,7 @@ let map_pattern_desc f d =
       Tpat_or (f p1, f p2, path)
   | Tpat_var _
   | Tpat_constant _
+  | Tpat_interval _
   | Tpat_any
   | Tpat_variant (_,None,_) -> d
 
