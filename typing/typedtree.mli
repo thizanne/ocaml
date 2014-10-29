@@ -42,6 +42,7 @@ and pattern_desc =
   | Tpat_var of Ident.t * string loc
   | Tpat_alias of pattern * Ident.t * string loc
   | Tpat_constant of constant
+  | Tpat_interval of constant * constant
   | Tpat_tuple of pattern list
   | Tpat_construct of
       Longident.t loc * constructor_description * pattern list
