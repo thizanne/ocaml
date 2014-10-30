@@ -220,6 +220,7 @@ module MakeIterator(Iter : IteratorArgument) : sig
         | Tpat_var (id, _) -> ()
         | Tpat_alias (pat1, _, _) -> iter_pattern pat1
         | Tpat_constant cst -> ()
+        | Tpat_interval (_, _) -> ()
         | Tpat_tuple list ->
             List.iter iter_pattern list
         | Tpat_construct (_, _, args) ->
