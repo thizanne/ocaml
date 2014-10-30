@@ -531,9 +531,17 @@ let matcher discr (p : Simple.pattern) rem =
       Any ) ->
       omegas @ rem
   | Constant cst, Constant cst' -> yesif (const_compare cst cst' = 0)
-  | Interval _, _ | _, Interval _ ->
-      (* Intervals are not yet produced; this will be filled in later *)
-      no ()
+  | Constant c, Interval (c1, c2) | Interval (c1, c2), Constant c ->
+      yesif (const_compare c1 c <= 0 && const_compare c c2 <= 0)
+  | Interval (c1, c2), Interval (d1, d2) ->
+      (* some value matches both intervals iff they intersect; keeping
+         intersecting rows over-approximates "may match", as required
+         for context and jump-summary computation (cf. the comment
+         above [matcher]) *)
+      yesif (const_compare c1 d2 <= 0 && const_compare d1 c2 <= 0)
+  | Interval _, (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _)
+  | (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _), Interval _
+    -> no ()
   | Constant _, (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _)
     ->
       no ()
@@ -1501,14 +1509,18 @@ let can_group discr pat =
   let open Patterns.Head in
   match (discr.pat_desc, (Simple.head pat).pat_desc) with
   | Any, Any
-  | Constant (Const_int _), Constant (Const_int _)
-  | Constant (Const_char _), Constant (Const_char _)
+  | (Constant (Const_int _) | Interval (Const_int _, _)),
+    (Constant (Const_int _) | Interval (Const_int _, _))
+  | (Constant (Const_char _) | Interval (Const_char _, _)),
+    (Constant (Const_char _) | Interval (Const_char _, _))
   | Constant (Const_string _), Constant (Const_string _)
   | Constant (Const_float _), Constant (Const_float _)
-  | Constant (Const_int32 _), Constant (Const_int32 _)
-  | Constant (Const_int64 _), Constant (Const_int64 _)
-  | Constant (Const_nativeint _), Constant (Const_nativeint _)
-  | Interval _, Interval _ ->
+  | (Constant (Const_int32 _) | Interval (Const_int32 _, _)),
+    (Constant (Const_int32 _) | Interval (Const_int32 _, _))
+  | (Constant (Const_int64 _) | Interval (Const_int64 _, _)),
+    (Constant (Const_int64 _) | Interval (Const_int64 _, _))
+  | (Constant (Const_nativeint _) | Interval (Const_nativeint _, _)),
+    (Constant (Const_nativeint _) | Interval (Const_nativeint _, _)) ->
       true
   | Construct { cstr_tag = Cstr_extension (p1, _) },
     Construct { cstr_tag = Cstr_extension (p2, _) }
