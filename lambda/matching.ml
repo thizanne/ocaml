@@ -1757,10 +1757,46 @@ and split_no_or cls args def k =
      [safe_before] allows it to commute with the already-rejected
      clauses; the rejected clauses form the next pm, reached through an
      exit added to the default environment. *)
+  (* [can_group] compares each candidate with the group discriminator
+     only, which is sound when admission is transitive. Interval keys
+     break transitivity: two intervals can each be disjoint from the
+     discriminator yet overlap each other, and the exact-key cell
+     division of [divide_constant_interval] is only correct when all
+     keys in a group are pairwise equal or disjoint. [keys] enforces
+     that invariant: a constant or interval head is only admitted if
+     it is equal to or disjoint from every key already in the group.
+     Rejected clauses go to the next matrix, chained by an exit, which
+     preserves first-match-wins (as for extension constructors). *)
+  let key_compatible (a1, a2) (b1, b2) =
+    (* equal, or disjoint *)
+    (const_compare a1 b1 = 0 && const_compare a2 b2 = 0)
+    || const_compare a2 b1 < 0
+    || const_compare b2 a1 < 0
+  in
+  (* Two constants are always pairwise equal or disjoint, so they
+     never need to be checked against each other: constants are only
+     scanned when an interval candidate arrives (intervals are rare),
+     and constant candidates only scan the accumulated intervals
+     (none in an interval-free match). *)
+  let keys_compatible (consts, itvs) p =
+    match (Simple.head p).pat_desc with
+    | Patterns.Head.Constant c ->
+        List.for_all (key_compatible (c, c)) itvs
+    | Patterns.Head.Interval (c1, c2) ->
+        List.for_all (key_compatible (c1, c2)) itvs
+        && List.for_all (fun c -> key_compatible (c1, c2) (c, c)) consts
+    | _ -> true
+  in
+  let add_key ((consts, itvs) as keys) p =
+    match (Simple.head p).pat_desc with
+    | Patterns.Head.Constant c -> (c :: consts, itvs)
+    | Patterns.Head.Interval (c1, c2) -> (consts, (c1, c2) :: itvs)
+    | _ -> keys
+  in
   let rec split (cls : Simple.clause list) =
     let discr = what_is_first_case cls in
-    collect discr [] [] cls
-  and collect group_discr rev_yes rev_no = function
+    collect discr ([], []) [] [] cls
+  and collect group_discr keys rev_yes rev_no = function
     | [ (((p, ps), _) as cl) ]
       when rev_yes <> [] && simple_omega_like p && List.for_all omega_like ps ->
         (* This enables an extra division in some frequent cases:
@@ -1773,16 +1809,17 @@ and split_no_or cls args def k =
 
            This optimisation is tested in the first part of
            testsuite/tests/basic/patmatch_split_no_or.ml *)
-        collect group_discr rev_yes (cl :: rev_no) []
+        collect group_discr keys rev_yes (cl :: rev_no) []
     | (((p, _), _) as cl) :: rem ->
-        if can_group group_discr p && safe_before cl rev_no then
-          collect group_discr (cl :: rev_yes) rev_no rem
+        if can_group group_discr p && keys_compatible keys p
+           && safe_before cl rev_no then
+          collect group_discr (add_key keys p) (cl :: rev_yes) rev_no rem
         else if should_split group_discr then (
           assert (rev_no = []);
           let yes = List.rev rev_yes in
           insert_split group_discr yes (cl :: rem) def k
         ) else
-          collect group_discr rev_yes (cl :: rev_no) rem
+          collect group_discr keys rev_yes (cl :: rev_no) rem
     | [] ->
         let yes = List.rev rev_yes and no = List.rev rev_no in
         insert_split group_discr yes no def k
