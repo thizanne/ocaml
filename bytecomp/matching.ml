@@ -187,14 +187,14 @@ let ctx_matcher p =
       end
   | Tpat_constant cst ->
       (fun q rem -> match q.pat_desc with
-      | Tpat_constant cst' when const_compare cst cst' = 0
-      | Tpat_interval (cst1, cst2) when const_compare cst1 cst <= 0 && const_compare cst cst2 <= 0
+      | Tpat_constant cst' when const_compare cst cst' = 0 -> p,rem
+      | Tpat_interval (cst1, cst2) when const_compare cst1 cst <= 0 && const_compare cst cst2 <= 0 -> p,rem
       | Tpat_any -> p,rem
       | _ -> raise NoMatch)
   | Tpat_interval (cst1,cst2) ->
       (fun q rem -> match q.pat_desc with
-      | Tpat_constant cst when const_compare cst cst1 <= 0 && const_compare cst2 cst <= 0
-      | Tpat_interval (cst1',cst2') when const_compare cst1' cst1 <= 0 && const_compare cst2 cst2' <= 0
+      | Tpat_constant cst when const_compare cst cst1 <= 0 && const_compare cst2 cst <= 0 -> p,rem
+      | Tpat_interval (cst1',cst2') when const_compare cst1' cst1 <= 0 && const_compare cst2 cst2' <= 0 -> p,rem
       | Tpat_any -> p,rem
       | _ -> raise NoMatch)
   | Tpat_variant (lab,Some omega,_) ->

@@ -106,6 +106,7 @@ type error =
   | Unexpected_existential
   | Unqualified_gadt_pattern of Path.t * string
   | Invalid_interval
+  | Nan_in_interval
   | Invalid_for_loop_index
   | No_value_clauses
   | Exception_pattern_below_toplevel

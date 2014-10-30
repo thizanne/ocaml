@@ -1005,10 +1005,10 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
       | Const_int64 _, Const_int64 _
       | Const_nativeint _, Const_nativeint _
       | Const_string _, Const_string _ -> ()
-      | Const_float f1, Const_float f2 ->
+      | Const_float _, Const_float _ ->
         let nan = Const_float "nan" in
-        if Parmatch.const_compare f1 nan = 0 || Parmatch.const_compare f2 nan = 0 then
-          raise (Error, loc, !env, Nan_in_interval)
+        if Parmatch.const_compare cst1 nan = 0 || Parmatch.const_compare cst2 nan = 0 then
+          raise (Error (loc, !env, Nan_in_interval))
       | _ -> raise (Error (loc, !env, Invalid_interval))
       end;
       unify_pat_types loc !env (type_constant cst1) expected_ty;
@@ -1032,7 +1032,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
                 (constant ~loc:gloc (constr x))
                 (loop (next x))
           in
-          let p = {loop first with ppat_loc=loc} in
+          let p = {(loop first) with ppat_loc=loc} in
           type_pat p expected_ty
         in
         let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
@@ -1052,7 +1052,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         | _ ->
           (* fall back to a when clause *)
           rp {
-            pat_desc = Ppat_interval (cst1, cst2);
+            pat_desc = Tpat_interval (cst1, cst2);
             pat_loc = loc; pat_extra=[];
             pat_type = expected_ty;
             pat_attributes = sp.ppat_attributes;
