@@ -64,6 +64,7 @@ type error =
   | Unexpected_existential
   | Unqualified_gadt_pattern of Path.t * string
   | Invalid_interval
+  | Nan_in_interval
   | Invalid_for_loop_index
   | No_value_clauses
   | Exception_pattern_below_toplevel
@@ -996,14 +997,6 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         pat_type = expected_ty;
         pat_attributes = sp.ppat_attributes;
         pat_env = !env }
-  | Ppat_interval (cst, cst') when cst = cst' ->
-      unify_pat_types loc !env (type_constant cst) expected_ty;
-      rp {
-        pat_desc = Tpat_constant cst;
-        pat_loc = loc; pat_extra=[];
-        pat_type = expected_ty;
-        pat_attributes = sp.ppat_attributes;
-        pat_env = !env }
   | Ppat_interval (cst1, cst2) ->
       begin match cst1, cst2 with
       | Const_char _, Const_char _
@@ -1011,15 +1004,60 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
       | Const_int32 _, Const_int32 _
       | Const_int64 _, Const_int64 _
       | Const_nativeint _, Const_nativeint _
+      | Const_string _, Const_string _ -> ()
+      | Const_float f1, Const_float f2 ->
+        let nan = Const_float "nan" in
+        if Parmatch.const_compare f1 nan = 0 || Parmatch.const_compare f2 nan = 0 then
+          raise (Error, loc, !env, Nan_in_interval)
       | _ -> raise (Error (loc, !env, Invalid_interval))
       end;
       unify_pat_types loc !env (type_constant cst1) expected_ty;
-      rp {
-        pat_desc = Tpat_interval (min cst1 cst2, max cst1 cst2);
-        pat_loc = loc; pat_extra=[];
-        pat_type = expected_ty;
-        pat_attributes = sp.ppat_attributes;
-        pat_env = !env }
+      let cmp = Parmatch.const_compare cst1 cst2 in
+      (* if bounds are equal, build a constant pattern *)
+      if cmp = 0 then
+        rp {
+          pat_desc = Tpat_constant cst1;
+          pat_loc = loc; pat_extra=[];
+          pat_type = expected_ty;
+          pat_attributes = sp.ppat_attributes;
+          pat_env = !env }
+      else
+        let make_expand first last next constr =
+          let open Ast_helper.Pat in
+          let gloc = {loc with Location.loc_ghost=true} in
+          let rec loop x =
+            if x = last then constant ~loc:gloc (constr x)
+            else
+              or_ ~loc:gloc
+                (constant ~loc:gloc (constr x))
+                (loop (next x))
+          in
+          let p = {loop first with ppat_loc=loc} in
+          type_pat p expected_ty
+        in
+        let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
+        (* when the range is small (<= 256), expand it *)
+        begin match cst1, cst2 with
+        | Const_char c1, Const_char c2 ->
+          make_expand c1 c2 (fun c -> Char.chr (Char.code c + 1)) (fun c -> Const_char c)
+        | Const_int i1, Const_int i2 when i2 - i1 < 256 ->
+          make_expand i1 i2 Pervasives.succ (fun i -> Const_int i)
+        | Const_int32 i1, Const_int32 i2 when Int32.compare (Int32.sub i2 i1) 256l < 0 ->
+          make_expand i1 i2 Int32.succ (fun i -> Const_int32 i)
+        | Const_int64 i1, Const_int64 i2 when Int64.compare (Int64.sub i2 i1) 256L < 0 ->
+          make_expand i1 i2 Int64.succ (fun i -> Const_int64 i)
+        | Const_nativeint i1, Const_nativeint i2 when Nativeint.compare (Nativeint.sub i2 i1) 256n < 0 ->
+          make_expand i1 i2 Nativeint.succ (fun i -> Const_nativeint i)
+        (* float and string ranges are never small *)
+        | _ ->
+          (* fall back to a when clause *)
+          rp {
+            pat_desc = Ppat_interval (cst1, cst2);
+            pat_loc = loc; pat_extra=[];
+            pat_type = expected_ty;
+            pat_attributes = sp.ppat_attributes;
+            pat_env = !env }
+        end
   | Ppat_tuple spl ->
       if List.length spl < 2 then
         Syntaxerr.ill_formed_ast loc "Tuples must have at least 2 components.";
@@ -4026,7 +4064,9 @@ let report_error env ppf = function
         name path tpath
         "must be qualified in this pattern"
   | Invalid_interval ->
-      fprintf ppf "@[Only character or integer intervals are supported in patterns.@]"
+      fprintf ppf "@[Both bounds of an interval must have the same type.@]"
+  | Nan_in_interval ->
+      fprintf ppf "@[Nan is not allowed in intervals.@]"
   | Invalid_for_loop_index ->
       fprintf ppf
         "@[Invalid for-loop index: only variables and _ are allowed.@]"
