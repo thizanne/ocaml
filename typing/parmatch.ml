@@ -86,6 +86,12 @@ let rec compat p q =
   | Tpat_or (p1,p2,_),_     -> compat p1 q || compat p2 q
   | _,Tpat_or (q1,q2,_)     -> compat p q1 || compat p q2
   | Tpat_constant c1, Tpat_constant c2 -> const_compare c1 c2 = 0
+  | Tpat_interval (c1, c2), Tpat_constant c3
+  | Tpat_constant c3, Tpat_interval (c1, c2) ->
+      const_compare c1 c3 <= 0 && const_compare c2 c3 >= 0
+  | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+      if const_compare c1 c3 >= 0 then const_compare c1 c4 <= 0
+      else const_compare c3 c2 <= 0
   | Tpat_tuple ps, Tpat_tuple qs -> compats ps qs
   | Tpat_lazy p, Tpat_lazy q -> compat p q
   | Tpat_construct (_, c1,ps1), Tpat_construct (_, c2,ps2) ->
@@ -163,6 +169,8 @@ let rec pretty_val ppf v =
   | Tpat_any -> fprintf ppf "_"
   | Tpat_var (x,_) -> Ident.print ppf x
   | Tpat_constant c -> fprintf ppf "%s" (pretty_const c)
+  | Tpat_interval (c1, c2) ->
+      fprintf ppf "%s .. %s" (pretty_const c1) (pretty_const c2)
   | Tpat_tuple vs ->
       fprintf ppf "@[(%a)@]" (pretty_vals ",") vs
   | Tpat_construct (_, cstr, []) ->
@@ -273,6 +281,12 @@ let simple_match p1 p2 =
   | Tpat_variant(l1, _, _), Tpat_variant(l2, _, _) ->
       l1 = l2
   | Tpat_constant(c1), Tpat_constant(c2) -> const_compare c1 c2 = 0
+  | Tpat_interval (c1, c2), Tpat_constant c ->
+      const_compare c1 c = 0 && const_compare c2 c = 0
+  | Tpat_constant c, Tpat_interval (d1, d2) ->
+      const_compare c d1 >= 0 && const_compare c d2 <= 0
+  | Tpat_interval (c1, c2), Tpat_interval (d1, d2) ->
+      const_compare c1 d1 >= 0 && const_compare c2 d2 <= 0
   | Tpat_tuple _, Tpat_tuple _ -> true
   | Tpat_lazy _, Tpat_lazy _ -> true
   | Tpat_record _ , Tpat_record _ -> true
@@ -343,7 +357,7 @@ let rec simple_match_args p1 p2 = match p2.pat_desc with
 *)
 
 let rec normalize_pat q = match q.pat_desc with
-  | Tpat_any | Tpat_constant _ -> q
+  | Tpat_any | Tpat_constant _ | Tpat_interval _ -> q
   | Tpat_var _ -> make_pat Tpat_any q.pat_type q.pat_env
   | Tpat_alias (p,_,_) -> normalize_pat p
   | Tpat_tuple (args) ->
@@ -462,7 +476,7 @@ let do_set_args erase_mutable q r = match q with
     make_pat
       (Tpat_array args) q.pat_type q.pat_env::
     rest
-| {pat_desc=Tpat_constant _|Tpat_any} ->
+| {pat_desc=Tpat_constant _ | Tpat_interval _ | Tpat_any} ->
     q::r (* case any is used in matching.ml *)
 | _ -> fatal_error "Parmatch.set_args"
 
@@ -620,6 +634,15 @@ let clean_env env =
   in
   loop env
 
+let full_interval_union global_min global_max li =
+  List.fold_left
+    (fun (min_, max_) ({pat_desc}, _) ->
+       match pat_desc with
+       | Tpat_interval (x, y) -> min min_ x, max max_ y
+       | _ -> assert false)
+    (global_max, global_min) li
+    = (global_min, global_max)
+
 let full_match ignore_generalized closing env =  match env with
 | ({pat_desc = Tpat_construct(_,c,_);pat_type=typ},_) :: _ ->
     if c.cstr_consts < 0 then false (* extensions *)
@@ -658,6 +681,38 @@ let full_match ignore_generalized closing env =  match env with
         row.row_fields
 | ({pat_desc = Tpat_constant(Const_char _)},_) :: _ ->
     List.length env = 256
+(* TODO
+The lines with Tpat_interval are probably not correct
+*)
+| ({pat_desc = Tpat_interval(Const_char _, Const_char _)},_) :: _ ->
+    full_interval_union
+      (Const_char '\000')
+      (Const_char '\255')
+      env
+| ({pat_desc = Tpat_interval (Const_int _, Const_int _)}, _) :: _ ->
+    full_interval_union
+      (Const_int Pervasives.min_int)
+      (Const_int Pervasives.max_int)
+      env
+| ({pat_desc = Tpat_interval (Const_int32 _, Const_int32 _)}, _) :: _ ->
+    full_interval_union
+      (Const_int32 Int32.min_int)
+      (Const_int32 Int32.max_int)
+      env
+| ({pat_desc = Tpat_interval (Const_int64 _, Const_int64 _)}, _) :: _ ->
+    full_interval_union
+      (Const_int64 Int64.min_int)
+      (Const_int64 Int64.max_int)
+      env
+| ({pat_desc = Tpat_interval (Const_nativeint _, Const_nativeint _)}, _) :: _ ->
+    full_interval_union
+      (Const_nativeint Nativeint.min_int)
+      (Const_nativeint Nativeint.max_int)
+      env
+| ({pat_desc = Tpat_interval (Const_string _, Const_string _)}, _) :: _
+| ({pat_desc = Tpat_interval (Const_float _, Const_float _)}, _) :: _ ->
+    (* Ranges of string or float (because of NaN) cannot be exhaustive *)
+    false
 | ({pat_desc = Tpat_constant(_)},_) :: _ -> false
 | ({pat_desc = Tpat_tuple(_)},_) :: _ -> true
 | ({pat_desc = Tpat_record(_)},_) :: _ -> true
@@ -926,7 +981,8 @@ let build_other_gadt ext env =
 
 let rec has_instance p = match p.pat_desc with
   | Tpat_variant (l,_,r) when is_absent l r -> false
-  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_) -> true
+  | Tpat_any | Tpat_var _ | Tpat_constant _
+  | Tpat_interval _ | Tpat_variant (_,None,_) -> true
   | Tpat_alias (p,_,_) | Tpat_variant (_,Some p,_) -> has_instance p
   | Tpat_or (p1,p2,_) -> has_instance p1 || has_instance p2
   | Tpat_construct (_,_,ps) | Tpat_tuple ps | Tpat_array ps ->
@@ -1704,7 +1760,7 @@ module Conv = struct
       match pat.pat_desc with
         Tpat_or (a,b,_) ->
           loop a @ loop b
-      | Tpat_any | Tpat_constant _ | Tpat_var _ ->
+      | Tpat_any | Tpat_constant _ | Tpat_var _ | Tpat_interval _ ->
           [mkpat Ppat_any]
       | Tpat_alias (p,_,_) -> loop p
       | Tpat_tuple lst ->
@@ -1872,7 +1928,8 @@ let rec collect_paths_from_pat r p = match p.pat_desc with
       collect_paths_from_pat
       (if extendable_path path then add_path path r else r)
       ps
-| Tpat_any|Tpat_var _|Tpat_constant _| Tpat_variant (_,None,_) -> r
+| Tpat_any|Tpat_var _ | Tpat_constant _
+| Tpat_interval _ | Tpat_variant (_,None,_) -> r
 | Tpat_tuple ps | Tpat_array ps
 | Tpat_construct (_, {cstr_tag=Cstr_extension _}, ps)->
     List.fold_left collect_paths_from_pat r ps
@@ -1966,7 +2023,8 @@ let irrefutable pat = le_pat pat omega
 let rec inactive pat = match pat with
 | Tpat_lazy _ ->
     false
-| Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_, None, _) ->
+| Tpat_any | Tpat_var _ | Tpat_constant _
+| Tpat_interval _ | Tpat_variant (_, None, _) ->
     true
 | Tpat_tuple ps | Tpat_construct (_, _, ps) | Tpat_array ps ->
     List.for_all (fun p -> inactive p.pat_desc) ps
