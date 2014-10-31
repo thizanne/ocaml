@@ -1523,6 +1523,12 @@ let rec le_pat p q =
   | Tpat_alias(p,_,_), _ -> le_pat p q
   | _, Tpat_alias(q,_,_) -> le_pat p q
   | Tpat_constant(c1), Tpat_constant(c2) -> const_compare c1 c2 = 0
+  | Tpat_constant(c1), Tpat_interval(c2, c3) ->
+      const_compare c1 c2 <= 0 && const_compare c3 c1 <= 0
+  | Tpat_interval(c1, c2), Tpat_constant(c3) ->
+      const_compare c1 c3 <= 0 && const_compare c3 c2 <= 0
+  | Tpat_interval(c1, c2), Tpat_interval(c3, c4) ->
+      const_compare c1 c3 <= 0 && const_compare c4 c2 <= 0
   | Tpat_construct(_,c1,ps), Tpat_construct(_,c2,qs) ->
       c1.cstr_tag = c2.cstr_tag && le_pats ps qs
   | Tpat_variant(l1,Some p1,_), Tpat_variant(l2,Some p2,_) ->
