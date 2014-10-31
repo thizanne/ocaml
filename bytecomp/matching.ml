@@ -754,8 +754,9 @@ let pat_as_constr = function
   | {pat_desc=Tpat_construct (_, cstr,_)} -> cstr
   | _ -> fatal_error "Matching.pat_as_constr"
 
-let group_constant = function
+let group_constant_or_interval = function
   | {pat_desc= Tpat_constant _} -> true
+  | {pat_desc= Tpat_interval _} -> true
   | _                           -> false
 
 and group_constructor = function
@@ -788,7 +789,8 @@ and group_lazy = function
 
 let get_group p = match p.pat_desc with
 | Tpat_any -> group_var
-| Tpat_constant _ -> group_constant
+| Tpat_constant _ -> group_constant_or_interval
+| Tpat_interval _ -> group_constant_or_interval
 | Tpat_construct _ -> group_constructor
 | Tpat_tuple _ -> group_tuple
 | Tpat_record _ -> group_record
