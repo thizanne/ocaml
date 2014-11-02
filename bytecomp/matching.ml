@@ -27,16 +27,16 @@ let dbg = false
 (*  See Peyton-Jones, ``The Implementation of functional programming
     languages'', chapter 5. *)
 (*
-  Bon, au commencement du monde c'etait vrai.
+  Well, at the beginning of the world it was true.
   Now, see Lefessant-Maranget ``Optimizing Pattern-Matching'' ICFP'2001
 *)
 
 
 (*
-   Many functions on the various data structures of the algorithm :
+   Many functions on the various data structures of the algorithm:
      - Pattern matrices.
      - Default environments: mapping from matrices to exit numbers.
-     - Contexts:  matrices whose column are partitioned into
+     - Contexts:  matrices whose columns are partitioned into
        left and right.
      - Jump summaries: mapping from exit numbers to contexts
 *)
@@ -454,13 +454,12 @@ let pretty_precompiled_res first nexts =
 
 
 
-(* Identifing some semantically equivalent lambda-expressions,
-   Our goal here is also to
-   find alpha-equivalent (simple) terms *)
+(* Identifying some semantically equivalent lambda-expressions,
+   Our goal here is also to find alpha-equivalent (simple) terms *)
 
 (* However, as shown by PR#6359 such sharing may hinders the
    lambda-code invariant that all bound idents are unique,
-   when switchs are compiled to test sequences.
+   when switches are compiled to test sequences.
    The definitive fix is the systematic introduction of exit/catch
    in case action sharing is present.
 *)
@@ -574,7 +573,7 @@ let up_ok (ps,act_p) l =
 
 
 (*
-   Simplify fonction normalize the first column of the match
+   Simplify functions normalize the first column of the match
      - records are expanded so that they posses all fields
      - aliases are removed and replaced by bindings in actions.
    However or-patterns are simplified differently,
@@ -666,7 +665,7 @@ let rec what_is_cases cases = match cases with
 (* A few operation on default environments *)
 let as_matrix cases = get_mins le_pats (List.map (fun (ps,_) -> ps) cases)
 
-(* For extension matching, record no imformation in matrix *)
+(* For extension matching, record no information in matrix *)
 let as_matrix_omega cases =
   get_mins le_pats
     (List.map
@@ -1064,7 +1063,7 @@ and split_constr cls args def k =
             end
         | [ps,_ as cl]
             when List.for_all group_var ps && yes <> [] ->
-       (* This enables an extra division in some frequent case :
+       (* This enables an extra division in some frequent cases:
           last row is made of variables only *)
               split_noex yes (cl::no) []
         | (p::_,_) as cl::rem ->
@@ -1232,17 +1231,17 @@ let divide_line make_ctx make get_args pat ctx pm =
 
 (* Then come various functions,
    There is one set of functions per matching style
-   (constants, constructors etc.)
+   (constants, constructors, etc.)
 
-   - matcher function are arguments to make_default (for defaukt handlers)
+   - matcher function are arguments to make_default (for default handlers)
    They may raise NoMatch or OrPat and perform the full
    matching (selection + arguments).
 
 
    - get_args and get_key are for the compiled matrices, note that
-   selection and geting arguments are separed.
+   selection and getting arguments are separated.
 
-   - make_ _matching combines the previous functions for produicing
+   - make_ _matching combines the previous functions for producing
    new  ``pattern_matching'' records.
 *)
 
@@ -1478,7 +1477,7 @@ let matcher_lazy p rem = match p.pat_desc with
 | _                   -> get_arg_lazy p rem
 
 (* Inlining the tag tests before calling the primitive that works on
-   lazy blocks. This is alse used in translcore.ml.
+   lazy blocks. This is also used in translcore.ml.
    No call other than Obj.tag when the value has been forced before.
 *)
 
@@ -1827,7 +1826,7 @@ let share_actions_tree sw d =
   let sw =
     List.map  (fun (cst,act) -> cst,store.Switch.act_store act) sw in
 
-(* Retrieve all actions, includint potentiel default *)
+(* Retrieve all actions, including potential default *)
   let acts = store.Switch.act_get_shared () in
 
 (* Array of actual actions *)
@@ -2266,7 +2265,7 @@ let mk_failaction_neg partial ctx def = match partial with
 
 
 
-(* Conforme a l'article et plus simple qu'avant *)
+(* Consistent with the article, simpler than before *)
 and mk_failaction_pos partial seen ctx defs  =
   if dbg then begin
     prerr_endline "**POS**" ;
@@ -2321,8 +2320,8 @@ let combine_constant arg cst partial ctx def
             const_lambda_list in
         call_switcher fail arg 0 255 int_lambda_list
     | Const_string _ ->
-(* Note as the bytecode compiler may resort to dichotmic search,
-   the clauses of strinswitch  are sorted with duplicate removed.
+(* Note as the bytecode compiler may resort to dichotomic search,
+   the clauses of stringswitch are sorted with duplicates removed.
    This partly applies to the native code compiler, which requires
    no duplicates *)
         let const_lambda_list = sort_lambda_list const_lambda_list in
@@ -2869,7 +2868,7 @@ and compile_no_test divide up_ctx repr partial ctx to_match =
 
    Notice that exhaustiveness information is trusted by the compiler,
    that is, a match flagged as Total should not fail at runtime.
-   More specifically, for instance if match y with x::_ -> x uis flagged
+   More specifically, for instance if match y with x::_ -> x is flagged
    total (as it happens during JoCaml compilation) then y cannot be []
    at runtime. As a consequence, the static Total exhaustiveness information
    have to to be downgraded to Partial, in the dubious cases where guards
@@ -2877,7 +2876,7 @@ and compile_no_test divide up_ctx repr partial ctx to_match =
    and change the subject values.
 LM:
    Lazy pattern was PR #5992, initial patch by lwp25.
-   I have  generalized teh patch, so as to also find mutable fields.
+   I have generalized the patch, so as to also find mutable fields.
 *)
 
 let find_in_pat pred =
@@ -2927,7 +2926,7 @@ let is_mutable p = find_in_pat have_mutable_field p
 
 (* Downgrade Total when
    1. Matching accesses some mutable fields;
-   2. And there are  guards or lazy patterns.
+   2. And there are guards or lazy patterns.
 *)
 
 let check_partial is_mutable is_lazy pat_act_list = function
