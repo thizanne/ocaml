@@ -22,7 +22,8 @@ let rec struct_const ppf = function
   | Const_base(Const_char c) -> fprintf ppf "%C" c
   | Const_base(Const_string (s, _)) -> fprintf ppf "%S" s
   | Const_immstring s -> fprintf ppf "#%S" s
-  | Const_base(Const_float f) -> fprintf ppf "%s" f
+  | Const_base(Const_float (_, Some f)) -> fprintf ppf "%s" f
+  | Const_base(Const_float (f, None)) -> fprintf ppf "%.17g" f
   | Const_base(Const_int32 n) -> fprintf ppf "%lil" n
   | Const_base(Const_int64 n) -> fprintf ppf "%LiL" n
   | Const_base(Const_nativeint n) -> fprintf ppf "%nin" n
@@ -33,12 +34,16 @@ let rec struct_const ppf = function
       let sconsts ppf scl =
         List.iter (fun sc -> fprintf ppf "@ %a" struct_const sc) scl in
       fprintf ppf "@[<1>[%i:@ @[%a%a@]]@]" tag struct_const sc1 sconsts scl
-  | Const_float_array [] ->
+  | Const_float_array ([], _) ->
       fprintf ppf "[| |]"
-  | Const_float_array (f1 :: fl) ->
+  | Const_float_array (_, f1 :: fl) ->
       let floats ppf fl =
         List.iter (fun f -> fprintf ppf "@ %s" f) fl in
       fprintf ppf "@[<1>[|@[%s%a@]|]@]" f1 floats fl
+  | Const_float_array (f1 :: fl, _) ->
+      let floats ppf fl =
+        List.iter (fun f -> fprintf ppf "@ %.17g" f) fl in
+      fprintf ppf "@[<1>[|@[%.17g%a@]|]@@" f1 floats fl
 
 let boxed_integer_name = function
   | Pnativeint -> "nativeint"

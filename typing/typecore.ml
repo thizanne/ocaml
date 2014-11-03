@@ -1005,9 +1005,8 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
       | Const_int64 _, Const_int64 _
       | Const_nativeint _, Const_nativeint _
       | Const_string _, Const_string _ -> ()
-      | Const_float _, Const_float _ ->
-        let nan = Const_float "nan" in
-        if Parmatch.const_compare cst1 nan = 0 || Parmatch.const_compare cst2 nan = 0 then
+      | Const_float (f1, _), Const_float (f2, _) ->
+        if Pervasives.compare f1 nan = 0 || Pervasives.compare f2 nan = 0 then
           raise (Error (loc, !env, Nan_in_interval))
       | _ -> raise (Error (loc, !env, Invalid_interval))
       end;

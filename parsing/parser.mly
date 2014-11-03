@@ -90,8 +90,9 @@ let mkuminus name arg =
       mkexp(Pexp_constant(Const_int64(Int64.neg n)))
   | "-", Pexp_constant(Const_nativeint n) ->
       mkexp(Pexp_constant(Const_nativeint(Nativeint.neg n)))
-  | ("-" | "-."), Pexp_constant(Const_float f) ->
-      mkexp(Pexp_constant(Const_float(neg_float_string f)))
+  | ("-" | "-."), Pexp_constant(Const_float (_, None)) -> assert false
+  | ("-" | "-."), Pexp_constant(Const_float (f, Some s)) ->
+      mkexp(Pexp_constant(Const_float(-.f, Some (neg_float_string s))))
   | _ ->
       mkexp(Pexp_apply(mkoperator ("~" ^ name) 1, ["", arg]))
 
@@ -324,7 +325,7 @@ let mkctf_attrs d attrs =
 %token EXCEPTION
 %token EXTERNAL
 %token FALSE
-%token <string> FLOAT
+%token <float * string> FLOAT
 %token FOR
 %token FUN
 %token FUNCTION
@@ -1924,7 +1925,7 @@ constant:
     INT                               { Const_int $1 }
   | CHAR                              { Const_char $1 }
   | STRING                            { let (s, d) = $1 in Const_string (s, d) }
-  | FLOAT                             { Const_float $1 }
+  | FLOAT                             { let (f, s) = $1 in Const_float (f, Some s) }
   | INT32                             { Const_int32 $1 }
   | INT64                             { Const_int64 $1 }
   | NATIVEINT                         { Const_nativeint $1 }
@@ -1932,12 +1933,12 @@ constant:
 signed_constant:
     constant                               { $1 }
   | MINUS INT                              { Const_int(- $2) }
-  | MINUS FLOAT                            { Const_float("-" ^ $2) }
+  | MINUS FLOAT                            { let (f, s) = $2 in Const_float(-. f, Some ("-" ^ s)) }
   | MINUS INT32                            { Const_int32(Int32.neg $2) }
   | MINUS INT64                            { Const_int64(Int64.neg $2) }
   | MINUS NATIVEINT                        { Const_nativeint(Nativeint.neg $2) }
   | PLUS INT                               { Const_int $2 }
-  | PLUS FLOAT                             { Const_float $2 }
+  | PLUS FLOAT                             { let (f, s) = $2 in Const_float (f, Some s) }
   | PLUS INT32                             { Const_int32 $2 }
   | PLUS INT64                             { Const_int64 $2 }
   | PLUS NATIVEINT                         { Const_nativeint $2 }

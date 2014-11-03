@@ -333,7 +333,8 @@ rule token = parse
           raise (Error(Literal_overflow "int", Location.curr lexbuf))
       }
   | float_literal
-      { FLOAT (remove_underscores(Lexing.lexeme lexbuf)) }
+      { let s = remove_underscores(Lexing.lexeme lexbuf) in
+        FLOAT (float_of_string s, s) }
   | int_literal "l"
       { try
           INT32 (cvt_int32_literal (Lexing.lexeme lexbuf))

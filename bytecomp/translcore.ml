@@ -506,7 +506,7 @@ let extract_constant = function
   | _ -> raise Not_constant
 
 let extract_float = function
-    Const_base(Const_float f) -> f
+    Const_base(Const_float (f,_)) -> f
   | _ -> fatal_error "Translcore.extract_float"
 
 (* To find reasonable names for let-bound and lambda-bound idents *)
@@ -806,7 +806,7 @@ and transl_exp0 e =
           | Paddrarray | Pintarray ->
               Lconst(Const_block(0, cl))
           | Pfloatarray ->
-              Lconst(Const_float_array(List.map extract_float cl))
+              Lconst(Const_float_array(List.map extract_float cl, []))
           | Pgenarray ->
               raise Not_constant in             (* can this really happen? *)
         Lprim(Pccall prim_obj_dup, [master])
@@ -1111,7 +1111,7 @@ and transl_record env all_labels repres lbl_expr_list opt_init_expr =
         | Record_regular -> Lconst(Const_block(0, cl))
         | Record_inlined tag -> Lconst(Const_block(tag, cl))
         | Record_float ->
-            Lconst(Const_float_array(List.map extract_float cl))
+            Lconst(Const_float_array(List.map extract_float cl, []))
         | Record_extension ->
             raise Not_constant
       with Not_constant ->

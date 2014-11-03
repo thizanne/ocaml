@@ -55,8 +55,8 @@ let is_absent_pat p = match p.pat_desc with
 
 let const_compare x y =
   match x,y with
-  | Const_float f1, Const_float f2 ->
-      Pervasives.compare (float_of_string f1) (float_of_string f2)
+  | Const_float (f1, _), Const_float (f2, _) ->
+      Pervasives.compare f1 f2
   | Const_string (s1, _), Const_string (s2, _) ->
       String.compare s1 s2
   | _, _ -> Pervasives.compare x y
@@ -148,7 +148,8 @@ let pretty_const c = match c with
 | Const_int i -> Printf.sprintf "%d" i
 | Const_char c -> Printf.sprintf "%C" c
 | Const_string (s, _) -> Printf.sprintf "%S" s
-| Const_float f -> Printf.sprintf "%s" f
+| Const_float (_, Some s) -> Printf.sprintf "%s" s
+| Const_float (f, None) -> Printf.sprintf "%.17g" f
 | Const_int32 i -> Printf.sprintf "%ldl" i
 | Const_int64 i -> Printf.sprintf "%LdL" i
 | Const_nativeint i -> Printf.sprintf "%ndn" i
@@ -934,9 +935,9 @@ let build_other ext env =  match env with
       0 succ p env
 | ({pat_desc=(Tpat_constant (Const_float _))} as p,_) :: _ ->
     build_other_constant
-      (function Tpat_constant(Const_float f) -> float_of_string f
+      (function Tpat_constant(Const_float (f, _)) -> f
               | _ -> assert false)
-      (function f -> Tpat_constant(Const_float (string_of_float f)))
+      (function f -> Tpat_constant(Const_float (f, None)))
       0.0 (fun f -> f +. 1.0) p env
 
 | ({pat_desc = Tpat_array args} as p,_)::_ ->

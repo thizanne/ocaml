@@ -207,7 +207,7 @@ let rec transl_const = function
     Const_base(Const_int i) -> Obj.repr i
   | Const_base(Const_char c) -> Obj.repr c
   | Const_base(Const_string (s, _)) -> Obj.repr s
-  | Const_base(Const_float f) -> Obj.repr (float_of_string f)
+  | Const_base(Const_float (f, _)) -> Obj.repr f
   | Const_base(Const_int32 i) -> Obj.repr i
   | Const_base(Const_int64 i) -> Obj.repr i
   | Const_base(Const_nativeint i) -> Obj.repr i
@@ -220,8 +220,8 @@ let rec transl_const = function
         (fun c -> Obj.set_field block !pos (transl_const c); incr pos)
         fields;
       block
-  | Const_float_array fields ->
-      Obj.repr(Array.of_list(List.map (fun f -> float_of_string f) fields))
+  | Const_float_array (fields, _) ->
+      Obj.repr (Array.of_list fields)
 
 (* Build the initial table of globals *)
 

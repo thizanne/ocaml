@@ -73,15 +73,23 @@ let record_events orig evl =
 
 (* Print a structured constant *)
 
-let print_float f =
+let print_float_string f =
   if String.contains f '.'
   then printf "%s" f
   else printf "%s." f
 ;;
 
+let print_float f = printf "%.17g" f
+;;
+
+let print_float_or_string f = function
+  | Some s -> print_float_string s
+  | None -> print_float f
+;;
+
 let rec print_struct_const = function
     Const_base(Const_int i) -> printf "%d" i
-  | Const_base(Const_float f) -> print_float f
+  | Const_base(Const_float (f, so)) -> print_float_or_string f so
   | Const_base(Const_string (s, _)) -> printf "%S" s
   | Const_immstring s -> printf "%S" s
   | Const_base(Const_char c) -> printf "%C" c
@@ -100,9 +108,13 @@ let rec print_struct_const = function
           List.iter (fun a -> printf ", "; print_struct_const a) al;
           printf ")"
       end
-  | Const_float_array a ->
+  | Const_float_array (a, []) ->
       printf "[|";
       List.iter (fun f -> print_float f; printf "; ") a;
+      printf "|]"
+  | Const_float_array (_, a) ->
+      printf "[|";
+      List.iter (fun f -> print_float_string f; printf "; ") a;
       printf "|]"
 
 (* Print an obj *)

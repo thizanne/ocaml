@@ -794,16 +794,16 @@ let rec close fenv cenv = function
         | Const_pointer n -> Uconst_ptr n
         | Const_block (tag, fields) ->
             str (Uconst_block (tag, List.map transl fields))
-        | Const_float_array sl ->
+        | Const_float_array (fl, _) ->
             (* constant float arrays are really immutable *)
-            str (Uconst_float_array (List.map float_of_string sl))
+            str (Uconst_float_array fl)
         | Const_immstring s ->
             str (Uconst_string s)
         | Const_base (Const_string (s, _)) ->
               (* strings (even literal ones) are mutable! *)
               (* of course, the empty string is really immutable *)
             str ~shared:false(*(String.length s = 0)*) (Uconst_string s)
-        | Const_base(Const_float x) -> str (Uconst_float (float_of_string x))
+        | Const_base(Const_float (x, _)) -> str (Uconst_float x)
         | Const_base(Const_int32 x) -> str (Uconst_int32 x)
         | Const_base(Const_int64 x) -> str (Uconst_int64 x)
         | Const_base(Const_nativeint x) -> str (Uconst_nativeint x)
