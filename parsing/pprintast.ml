@@ -189,6 +189,9 @@ class printer  ()= object(self:'self)
                                          (* pp f "%LdL" i *)
     | Const_nativeint i -> self#paren (i<0n) (fun f -> pp f "%ndn") f i
                                              (* pp f "%ndn" i *)
+  method constant_or_underscore f = function
+    | None -> pp f "_"
+    | Some x -> self#constant f x
 
   (* trailing space*)
   method mutable_flag f   = function
@@ -391,7 +394,8 @@ class printer  ()= object(self:'self)
               (self#list longident_x_pattern ~sep:";@;") l)
     | Ppat_tuple l -> pp f "@[<1>(%a)@]" (self#list  ~sep:"," self#pattern1)  l (* level1*)
     | Ppat_constant (c) -> pp f "%a" self#constant c
-    | Ppat_interval (c1, c2) -> pp f "%a..%a" self#constant c1 self#constant c2
+    | Ppat_interval (c1, c2) -> pp f "%a .. %a" self#constant_or_underscore c1
+      self#constant_or_underscore c2
     | Ppat_variant (l,None) ->  pp f "`%s" l
     | Ppat_constraint (p, ct) ->
         pp f "@[<2>(%a@;:@;%a)@]" self#pattern1 p self#core_type ct

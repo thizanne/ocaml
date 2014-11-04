@@ -63,6 +63,11 @@ let fmt_constant f x =
   | Const_nativeint (i) -> fprintf f "Const_nativeint %nd" i;
 ;;
 
+let fmt_constant_or_underscore f = function
+  | None -> fprintf f "_";
+  | Some x -> fmt_constant f x;
+;;
+
 let fmt_mutable_flag f x =
   match x with
   | Immutable -> fprintf f "Immutable";
@@ -197,7 +202,8 @@ and pattern i ppf x =
       pattern i ppf p;
   | Ppat_constant (c) -> line i ppf "Ppat_constant %a\n" fmt_constant c;
   | Ppat_interval (c1, c2) ->
-      line i ppf "Ppat_interval %a..%a\n" fmt_constant c1 fmt_constant c2;
+      line i ppf "Ppat_interval %a .. %a\n" fmt_constant_or_underscore c1
+        fmt_constant_or_underscore c2;
   | Ppat_tuple (l) ->
       line i ppf "Ppat_tuple\n";
       list i pattern ppf l;

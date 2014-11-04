@@ -1470,11 +1470,11 @@ simple_pattern:
   | simple_pattern_not_ident { $1 }
 ;
 simple_pattern_not_ident:
-  | UNDERSCORE
-      { mkpat(Ppat_any) }
-  | signed_constant
-      { mkpat(Ppat_constant $1) }
-  | signed_constant DOTDOT signed_constant
+  | signed_constant_or_underscore
+      { match $1 with
+      | None -> mkpat(Ppat_any)
+      | Some c -> mkpat(Ppat_constant c) }
+  | signed_constant_or_underscore DOTDOT signed_constant_or_underscore
       { mkpat(Ppat_interval ($1, $3)) }
   | constr_longident
       { mkpat(Ppat_construct(mkrhs $1 1, None)) }
@@ -1942,6 +1942,10 @@ signed_constant:
   | PLUS INT32                             { Const_int32 $2 }
   | PLUS INT64                             { Const_int64 $2 }
   | PLUS NATIVEINT                         { Const_nativeint $2 }
+;
+signed_constant_or_underscore:
+    UNDERSCORE                        { None }
+  | signed_constant                   { Some $1 }
 ;
 
 /* Identifiers and long identifiers */

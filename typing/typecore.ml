@@ -997,16 +997,39 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         pat_attributes = sp.ppat_attributes;
         pat_env = !env }
   | Ppat_interval (cst1, cst2) ->
-      begin match cst1, cst2 with
-      | Const_char _, Const_char _
-      | Const_int _, Const_int _
-      | Const_int32 _, Const_int32 _
-      | Const_int64 _, Const_int64 _
-      | Const_nativeint _, Const_nativeint _
-      | Const_string _, Const_string _
-      | Const_float _, Const_float _ -> ()
-      | _ -> raise (Error (loc, !env, Invalid_interval))
-      end;
+      let cst1, cst2 = match cst1, cst2 with
+      | Some c1, Some c2 -> begin match c1, c2 with
+        | Const_char _, Const_char _
+        | Const_int _, Const_int _
+        | Const_int32 _, Const_int32 _
+        | Const_int64 _, Const_int64 _
+        | Const_nativeint _, Const_nativeint _
+        | Const_float _, Const_float _
+        | Const_string _, Const_string _ -> ()
+        | _ -> raise (Error (loc, !env, Invalid_interval)) end;
+        c1, c2
+      | None, None -> raise (Error (loc, !env, Invalid_interval))
+      | Some c1, None ->
+        let c2 = match c1 with
+        | Const_char _ -> Const_char '\000'
+        | Const_int _ -> Const_int min_int
+        | Const_int32 _ -> Const_int32 Int32.min_int
+        | Const_int64 _ -> Const_int64 Int64.min_int
+        | Const_nativeint _ -> Const_nativeint Nativeint.min_int
+        | Const_float _ -> Const_float (nan, None)
+        | Const_string _ -> Const_string ("", None)
+        in c1, c2
+      | None, Some c2 ->
+        let c1 = match c2 with
+        | Const_char _ -> Const_char '\255'
+        | Const_int _ -> Const_int max_int
+        | Const_int32 _ -> Const_int32 Int32.max_int
+        | Const_int64 _ -> Const_int64 Int64.max_int
+        | Const_nativeint _ -> Const_nativeint Nativeint.max_int
+        | Const_float _ -> Const_float (infinity, None)
+        | Const_string _ -> raise (Error (loc, !env, Invalid_interval))
+        in c1, c2
+      in
       unify_pat_types loc !env (type_constant cst1) expected_ty;
       let cmp = Parmatch.const_compare cst1 cst2 in
       (* if bounds are equal, build a constant pattern *)
