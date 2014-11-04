@@ -1018,18 +1018,26 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
           pat_attributes = sp.ppat_attributes;
           pat_env = !env }
       else
-        let make_expand first last next constr =
+        let from_list constr l =
           let open Ast_helper.Pat in
           let gloc = {loc with Location.loc_ghost=true} in
-          let rec loop x =
-            if x = last then constant ~loc:gloc (constr x)
-            else
-              or_ ~loc:gloc
-                (constant ~loc:gloc (constr x))
-                (loop (next x))
+          let rec loop = function
+          | [] -> assert false
+          | [x] -> constant ~loc:gloc (constr x)
+          | x::l ->
+            or_ ~loc:gloc
+              (constant ~loc:gloc (constr x))
+              (loop l)
           in
-          let p = {(loop first) with ppat_loc=loc} in
+          let p = {(loop l) with ppat_loc=loc} in
           type_pat p expected_ty
+        in
+        let make_expand first last succ constr =
+          let rec loop x =
+            if x = last then [x]
+            else x::loop (succ x)
+          in
+          from_list constr (loop first)
         in
         let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
         (* when the range is small (<= 256), expand it *)
@@ -1044,7 +1052,12 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
           make_expand i1 i2 Int64.succ (fun i -> Const_int64 i)
         | Const_nativeint i1, Const_nativeint i2 when Nativeint.compare (Nativeint.sub i2 i1) 256n < 0 ->
           make_expand i1 i2 Nativeint.succ (fun i -> Const_nativeint i)
-        (* float and string ranges are never small *)
+        (* very special float ranges, involving only min/max_float, +/-inf, nan *)
+        | Const_float (f1, _), Const_float (f2, _) when Pervasives.compare f2 min_float <= 0 || Pervasives.compare max_float f1 <= 0 ->
+          from_list (fun f -> Const_float (f, None))
+            (List.filter (fun f -> Pervasives.compare f1 f <= 0 && Pervasives.compare f f2 <= 0)
+               [nan; neg_infinity; min_float; max_float; infinity])
+        (* string and other float ranges are never small *)
         | _ ->
           (* fall back to a when clause *)
           rp {
