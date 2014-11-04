@@ -1896,46 +1896,6 @@ let make_test_sequence fail tst lt_tst arg const_lambda_list =
   hs (make_test_sequence const_lambda_list)
 
 
-let rec explode_inter offset i j act k =
-  if i <= j then
-    explode_inter offset i (j-1) act ((j-offset,act)::k)
-  else
-    k
-
-let max_vals cases acts =
-  let vals = Array.make (Array.length acts) 0 in
-  for i=Array.length cases-1 downto 0 do
-    let l,h,act = cases.(i) in
-    vals.(act) <- h - l + 1 + vals.(act)
-  done ;
-  let max = ref 0 in
-  for i = Array.length vals-1 downto 0 do
-    if vals.(i) >= vals.(!max) then
-      max := i
-  done ;
-  if vals.(!max) > 1 then
-    !max
-  else
-    -1
-
-let as_int_list cases acts =
-  let default = max_vals cases acts in
-  let min_key,_,_ = cases.(0)
-  and _,max_key,_ = cases.(Array.length cases-1) in
-
-  let rec do_rec i k =
-    if i >= 0 then
-      let low, high, act =  cases.(i) in
-      if act = default then
-        do_rec (i-1) k
-      else
-        do_rec (i-1) (explode_inter min_key low high acts.(act) k)
-    else
-      k in
-  min_key, max_key,do_rec (Array.length cases-1) [],
-  (if default >= 0 then Some acts.(default) else None)
-
-
 module SArg = struct
   type primitive = Lambda.primitive
 
