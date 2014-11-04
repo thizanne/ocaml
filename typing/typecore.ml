@@ -64,7 +64,6 @@ type error =
   | Unexpected_existential
   | Unqualified_gadt_pattern of Path.t * string
   | Invalid_interval
-  | Nan_in_interval
   | Invalid_for_loop_index
   | No_value_clauses
   | Exception_pattern_below_toplevel
@@ -1004,10 +1003,8 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
       | Const_int32 _, Const_int32 _
       | Const_int64 _, Const_int64 _
       | Const_nativeint _, Const_nativeint _
-      | Const_string _, Const_string _ -> ()
-      | Const_float (f1, _), Const_float (f2, _) ->
-        if Pervasives.compare f1 nan = 0 || Pervasives.compare f2 nan = 0 then
-          raise (Error (loc, !env, Nan_in_interval))
+      | Const_string _, Const_string _
+      | Const_float _, Const_float _ -> ()
       | _ -> raise (Error (loc, !env, Invalid_interval))
       end;
       unify_pat_types loc !env (type_constant cst1) expected_ty;
@@ -4064,8 +4061,6 @@ let report_error env ppf = function
         "must be qualified in this pattern"
   | Invalid_interval ->
       fprintf ppf "@[Both bounds of an interval must have the same type.@]"
-  | Nan_in_interval ->
-      fprintf ppf "@[Nan is not allowed in intervals.@]"
   | Invalid_for_loop_index ->
       fprintf ppf
         "@[Invalid for-loop index: only variables and _ are allowed.@]"
