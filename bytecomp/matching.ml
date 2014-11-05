@@ -1819,7 +1819,6 @@ let handle_shared () =
       make_exit i in
   hs,handle_shared
 
-
 let share_actions_tree sw d =
   let store = StoreExp.mk_store () in
 (* Default action is always shared *)
@@ -1844,6 +1843,20 @@ let share_actions_tree sw d =
   | Some d -> Some (acts.(d)) in
   let sw = List.map (fun (cst,j) -> cst,acts.(j)) sw in
   !hs,sw,d
+
+
+let handle_shared_actions sw store =
+(* Retrieve all actions, including potential default *)
+  let acts = store.Switch.act_get_shared () in
+
+(* Array of actual actions *)
+  let hs,handle_shared = handle_shared () in
+  let acts = Array.map handle_shared acts in
+
+(* Recontruct switch list *)
+  let sw = List.map (fun (cst,j) -> cst,acts.(j)) sw in
+  !hs,sw
+
 
 let next_float f = (* TODO: is this correct? *)
   if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
@@ -1900,54 +1913,108 @@ let rec cut n l =
     [] -> raise (Invalid_argument "cut")
   | a::l -> let l1,l2 = cut (n-1) l in a::l1, l2
 
-let rec do_tests_fail fail tst arg = function
-  | [] -> fail
-  | ((c,c'), act)::rem ->
-      assert (const_compare c c' = 0);
-      Lifthenelse
-        (Lprim (tst, [arg ; Lconst (Const_base c)]),
-         do_tests_fail fail tst arg rem,
-         act)
+open Switch
 
-let rec do_tests_nofail tst arg = function
-  | [] -> fatal_error "Matching.do_tests_nofail"
-  | [_,act] -> act
-  | ((c,c'),act)::rem ->
-      assert (const_compare c c' = 0);
-      Lifthenelse
-        (Lprim (tst, [arg ; Lconst (Const_base c)]),
-         do_tests_nofail tst arg rem,
-         act)
+let any_as_interval_canfail fail least l =
+  let store = StoreExp.mk_store () in
 
-let make_test_sequence fail tst lt_tst arg const_lambda_list =
-  let const_lambda_list = sort_lambda_list const_lambda_list in
-  let hs,const_lambda_list,fail =
-    share_actions_tree const_lambda_list fail in
-
-  let do_tests const_lambda_list = match fail with
-  | None -> do_tests_nofail tst arg const_lambda_list
-  | Some fail -> do_tests_fail fail tst arg const_lambda_list
+  let over v = match next_constant v with
+  | None -> []
+  | Some c -> [c, 0]
   in
-  let rec make_test_sequence const_lambda_list =
-    if List.length const_lambda_list >= 4
-        || has_non_constant_intervals const_lambda_list then
-      split_sequence const_lambda_list
+
+  let rec nofail_rec cur_low cur_high cur_act = function
+  | [] -> (cur_low, cur_act)::over cur_high
+  | (((l,h),act)::rem) as all->
+    assert (const_compare l cur_high > 0);
+    let act_index = store.act_store act in
+    let next = match next_constant cur_high with
+    | Some v -> v
+    | None -> assert false in
+    if const_compare next l = 0 then
+      if act_index = cur_act then
+        nofail_rec cur_low h cur_act rem
+      else if act_index = 0 then
+        (cur_low, cur_act)::fail_rec l h rem
+      else
+        (cur_low, cur_act)::nofail_rec l h act_index rem
+    else if act_index = 0 then
+      (cur_low, cur_act)::fail_rec next next all
     else
-      do_tests const_lambda_list
+      (cur_low, cur_act)::(next, 0)::nofail_rec l h act_index rem
+
+  and fail_rec cur_low cur_high = function
+  | [] -> [cur_low, 0]
+  | ((l,h),act)::rem ->
+    assert (const_compare l cur_high > 0);
+    let act_index = store.act_store act in
+    if act_index = 0 then fail_rec cur_low h rem
+    else (cur_low, 0)::nofail_rec l h act_index rem in
+
+  assert (store.act_store fail = 0);
+
+  let r = match l with
+  | [] -> []
+  | ((l,h),act)::rem ->
+    let act_index = store.act_store act in
+    if act_index = 0 then
+      fail_rec least h rem
+    else if const_compare least l < 0 then
+      (least, 0)::nofail_rec l h act_index rem
+    else
+      nofail_rec l h act_index rem in
+
+  r, store
+
+
+let any_as_interval_nofail least l =
+  let store = StoreExp.mk_store () in
+
+  let rec i_rec cur_low cur_high cur_act = function
+  | [] -> [cur_low, cur_act]
+  | ((l,h),act)::rem ->
+    assert (const_compare l cur_high > 0);
+    let act_index = store.act_store act in
+    if act_index = cur_act then
+      i_rec cur_low h cur_act rem
+    else
+      (cur_low, cur_act)::i_rec l h act_index rem in
+
+  let r = match l with
+  | ((_,h),act)::rem ->
+    let act_index = store.act_store act in
+    i_rec least h act_index rem
+  | _ -> assert false in
+
+  r, store
+
+
+let any_as_interval fail least l =
+  let l = sort_lambda_list l in
+  match fail with
+  | None -> any_as_interval_nofail least l
+  | Some act -> any_as_interval_canfail act least l
+
+let make_test_sequence fail least lt_tst arg const_lambda_list =
+  let const_lambda_list, store =
+    any_as_interval fail least const_lambda_list in
+  let hs, const_lambda_list =
+    handle_shared_actions const_lambda_list store in
+
+  (* any_as_interval made failing cases explicit, so there is no need to test for them any more *)
+  let rec make_test_sequence = function
+  | [] -> assert false
+  | [_, act] -> act
+  | l -> split_sequence l
 
   and split_sequence const_lambda_list =
     let list1, list2 =
       cut (List.length const_lambda_list / 2) const_lambda_list in
-    Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base (fst(fst(List.hd list2))))]),
+    let least2 = fst (List.hd list2) in
+    Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base least2)]),
                 make_test_sequence list1, make_test_sequence list2)
   in
-  if lt_tst = Pignore then
-    if has_non_constant_intervals const_lambda_list then
-      fatal_error "Matching.make_test_sequence" (* cannot match intervals with only non-equality *)
-    else
-      hs (do_tests const_lambda_list)
-  else
-    hs (make_test_sequence const_lambda_list)
+  hs (make_test_sequence const_lambda_list)
 
 
 module SArg = struct
@@ -1991,6 +2058,12 @@ module SArg = struct
   let make_exit = make_exit
 
 end
+
+(**********************)
+(* Integer test trees *)
+(**********************)
+
+module Switcher = Switch.Make(SArg)
 
 (* Action sharing for Lswitch argument *)
 let share_actions_sw sw =
@@ -2057,22 +2130,20 @@ let reintroduce_fail sw = match sw.sw_failaction with
 | Some _ -> sw
 
 
-module Switcher = Switch.Make(SArg)
-open Switch
-
 let lambda_of_int i =  Lconst (Const_base (Const_int i))
 
-let rec last def = function
-  | [] -> def
+let rec last = function
+  | [] -> assert false
   | [(_,x),_] -> x
-  | _::rem -> last def rem
+  | _::rem -> last rem
 
 let get_edges low high l = match l with
 | [] -> low, high
-| ((low,high),_)::l -> low, last high l
+| [(low, high), _] -> low, high
+| ((low,_),_)::l -> low, last l
 
 
-let as_interval_canfail fail low high l =
+let int_as_interval_canfail fail low high l =
   let store = StoreExp.mk_store () in
 
   let do_store tag act =
@@ -2100,11 +2171,9 @@ let as_interval_canfail fail low high l =
           else
             (cur_low, cur_high, cur_act)::nofail_rec il ih act_index rem
         else if act_index = 0 then
-          (cur_low, cur_high, cur_act)::
-          fail_rec (cur_high+1) (cur_high+1) all
+          (cur_low, cur_high, cur_act)::fail_rec (cur_high+1) (cur_high+1) all
         else
-          (cur_low, cur_high, cur_act)::
-          (cur_high+1,il-1,0)::
+          (cur_low, cur_high, cur_act)::(cur_high+1,il-1,0)::
           nofail_rec il ih act_index rem
 
   and fail_rec cur_low cur_high = function
@@ -2133,7 +2202,7 @@ let as_interval_canfail fail low high l =
   let r = init_rec l in
   Array.of_list r,  store
 
-let as_interval_nofail l =
+let int_as_interval_nofail l =
   let store = StoreExp.mk_store () in
 
   let rec i_rec cur_low cur_high cur_act = function
@@ -2155,26 +2224,26 @@ let as_interval_nofail l =
 
   Array.of_list inters, store
 
- let sort_int_lambda_list l =
-   List.sort
-     (fun ((i1l,i1h),_) ((i2l,i2h),_) ->
-       if i1l < i2l then -1
-       else if i2l < i1l then 1
-       else if i1h < i2h then -1
-       else if i2h < i1h then 1
-       else 0)
-     l
+let sort_int_lambda_list l =
+  List.sort
+    (fun ((i1l,i1h),_) ((i2l,i2h),_) ->
+      if i1l < i2l then -1
+      else if i2l < i1l then 1
+      else if i1h < i2h then -1
+      else if i2h < i1h then 1
+      else 0)
+    l
 
-let as_interval fail low high l =
+let int_as_interval fail low high l =
   let l = sort_int_lambda_list l in
   get_edges low high l,
   (match fail with
-  | None -> as_interval_nofail l
-  | Some act -> as_interval_canfail act low high l)
+  | None -> int_as_interval_nofail l
+  | Some act -> int_as_interval_canfail act low high l)
 
 let call_switcher fail arg low high int_lambda_list =
   let edges, (cases, actions) =
-    as_interval fail low high int_lambda_list in
+    int_as_interval fail low high int_lambda_list in
   Switcher.zyva edges arg cases actions
 
 
@@ -2319,11 +2388,6 @@ and mk_failaction_pos partial seen ctx defs  =
     defs
 
 
-let prim_string_notequal =
-  Pccall{prim_name = "caml_string_notequal";
-         prim_arity = 2; prim_alloc = false;
-         prim_native_name = ""; prim_native_float = false}
-
 let prim_string_lessthan =
   Pccall{prim_name = "caml_string_lessthan";
          prim_arity = 2; prim_alloc = false;
@@ -2354,7 +2418,7 @@ let combine_constant_interval arg cst partial ctx def
         let const_lambda_list = sort_lambda_list const_lambda_list in
         if has_non_constant_intervals const_lambda_list then
           make_test_sequence
-            fail prim_string_notequal prim_string_lessthan
+            fail (Const_string ("", None)) prim_string_lessthan
             arg const_lambda_list
         else
           let sw =
@@ -2367,23 +2431,19 @@ let combine_constant_interval arg cst partial ctx def
           hs (Lstringswitch (arg,sw,fail))
     | Const_float _ ->
         make_test_sequence
-          fail
-          (Pfloatcomp Cneq) (Pfloatcomp Clt)
+          fail (Const_float (nan, None)) (Pfloatcomp Clt)
           arg const_lambda_list
     | Const_int32 _ ->
         make_test_sequence
-          fail
-          (Pbintcomp(Pint32, Cneq)) (Pbintcomp(Pint32, Clt))
+          fail (Const_int32 Int32.min_int) (Pbintcomp(Pint32, Clt))
           arg const_lambda_list
     | Const_int64 _ ->
         make_test_sequence
-          fail
-          (Pbintcomp(Pint64, Cneq)) (Pbintcomp(Pint64, Clt))
+          fail (Const_int64 Int64.min_int) (Pbintcomp(Pint64, Clt))
           arg const_lambda_list
     | Const_nativeint _ ->
         make_test_sequence
-          fail
-          (Pbintcomp(Pnativeint, Cneq)) (Pbintcomp(Pnativeint, Clt))
+          fail (Const_nativeint Nativeint.min_int) (Pbintcomp(Pnativeint, Clt))
           arg const_lambda_list
   in lambda1,jumps_union local_jumps total
 
@@ -2510,7 +2570,7 @@ let combine_constructor arg ex_pat cstr partial ctx def
 
 let make_test_sequence_variant_constant fail arg int_lambda_list =
   let _, (cases, actions) =
-    as_interval fail min_int max_int int_lambda_list in
+    int_as_interval fail min_int max_int int_lambda_list in
   Switcher.test_sequence arg cases actions
 
 let call_switcher_variant_constant fail arg int_lambda_list =
