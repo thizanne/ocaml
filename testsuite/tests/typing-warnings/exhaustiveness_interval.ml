@@ -14,9 +14,8 @@ Lines 1-3, characters 18-17:
 3 |   | 11 .. 20 -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
   Here is an example of a case that is not matched: "21"
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val f : int -> int = <fun>
 |}]
 
 (* Redundant constant inside interval *)
@@ -29,9 +28,8 @@ Line 3, characters 4-5:
 3 |   | 5 -> 2
         ^
 Warning 11 [redundant-case]: this match case is unused.
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val g : int -> int = <fun>
 |}]
 
 (* Redundant sub-interval *)
@@ -44,9 +42,8 @@ Line 3, characters 4-10:
 3 |   | 3 .. 7 -> 2
         ^^^^^^
 Warning 11 [redundant-case]: this match case is unused.
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val h : int -> int = <fun>
 |}]
 
 (* Exhaustive char interval *)
@@ -94,9 +91,8 @@ Lines 3-6, characters 36-20:
 6 |   | Bool, false -> 3..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
   Here is an example of a case that is not matched: "(Int, 11)"
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val l : 'a ty -> 'a -> int = <fun>
 |}]
 
 (* Int32 non-exhaustive *)
@@ -110,9 +106,8 @@ Lines 1-3, characters 20-21:
 3 |   | 101l .. 200l -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
   Here is an example of a case that is not matched: "201l"
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val m : int32 -> int = <fun>
 |}]
 
 (* Int64 redundant sub-interval *)
@@ -125,9 +120,8 @@ Line 3, characters 4-14:
 3 |   | 50L .. 80L -> 2
         ^^^^^^^^^^
 Warning 11 [redundant-case]: this match case is unused.
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val n : int64 -> int = <fun>
 |}]
 
 (* Nativeint non-exhaustive *)
@@ -141,9 +135,8 @@ Lines 1-3, characters 24-20:
 3 |   | 51n .. 100n -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
   Here is an example of a case that is not matched: "101n"
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val o : nativeint -> int = <fun>
 |}]
 
 (* Nativeint exhaustive with wildcard *)
@@ -151,9 +144,7 @@ let p (x : nativeint) = match x with
   | 0n .. 100n -> 1
   | _ -> 2;;
 [%%expect {|
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
-
+val p : nativeint -> int = <fun>
 |}]
 
 (* Gap between intervals: counter-example is the gap value *)
@@ -167,9 +158,8 @@ Lines 1-3, characters 10-16:
 3 |   | 7 .. 10 -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
   Here is an example of a case that is not matched: "6"
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val q : int -> int = <fun>
 |}]
 
 (* Char gap: counter-example shows the gap character *)
@@ -193,9 +183,7 @@ let s x = match x with
   | 5 .. 20 -> 2
   | _ -> 3;;
 [%%expect {|
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
-
+val s : int -> int = <fun>
 |}]
 
 (* Wildcard before interval makes trailing interval redundant *)
@@ -208,9 +196,8 @@ Line 4, characters 4-12:
 4 |   | 11 .. 20 -> 3;;
         ^^^^^^^^
 Warning 11 [redundant-case]: this match case is unused.
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val t : int -> int = <fun>
 |}]
 
 (* Overlapping intervals: second is partially redundant but not unused *)
@@ -219,9 +206,7 @@ let u x = match x with
   | 5 .. 10 -> 2
   | _ -> 3;;
 [%%expect {|
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
-
+val u : int -> int = <fun>
 |}]
 
 (* Mismatched interval bound types *)
@@ -265,9 +250,7 @@ let full_range32 (x : int32) = match x with
   | -2147483648l .. 0l -> 1
   | 1l .. 2147483647l -> 2;;
 [%%expect {|
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
-
+val full_range32 : int32 -> int = <fun>
 |}]
 
 (* An arm covered by the union of two earlier intervals is redundant;
@@ -282,7 +265,6 @@ Line 4, characters 4-11:
 4 |   | 5 .. 15 -> 3
         ^^^^^^^
 Warning 11 [redundant-case]: this match case is unused.
->> Fatal error: Matching.do_compile_matching: Interval
-Uncaught exception: Misc.Fatal_error
 
+val union_covered : int -> int = <fun>
 |}]
