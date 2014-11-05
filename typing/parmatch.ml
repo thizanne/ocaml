@@ -285,6 +285,22 @@ let const_compare x y =
     |Const_nativeint _
     ), _ -> Stdlib.compare x y
 
+(* Integer interval patterns: analysis overview.
+
+   Interval patterns [lo .. hi] over int, int32, int64 and nativeint
+   reach this module as [Tpat_interval (lo, hi)] heads (cf.
+   [Typedtree.Tpat_interval]: the type checker normalizes bounds so
+   that [lo < hi], collapses [lo = hi] to [Tpat_constant], and still
+   expands char intervals to or-patterns). For the analyses here a
+   constant [c] behaves as the degenerate interval [c, c].
+
+   Exhaustiveness treats a column of constants and intervals as a set
+   of closed integer ranges: [full_match] sorts them by lower bound
+   and checks contiguous coverage of the whole type, and [build_other]
+   derives a counter-example from the first gap. Compatibility
+   ([compat], [simple_match]), subsumption ([le_pat]) and intersection
+   ([lub]) compare ranges using the helpers below. *)
+
 (* Interval arithmetic helpers.
 
    [next_constant c] and [prev_constant c] return the successor/predecessor
@@ -329,8 +345,9 @@ let prev_constant = function
       Misc.fatal_error "Parmatch.prev_constant"
 
 let is_least_constant c = Option.is_none (prev_constant c)
-let const_max c1 c2 = if const_compare c1 c2 >= 0 then c1 else c2
 
+let const_min c1 c2 = if const_compare c1 c2 <= 0 then c1 else c2
+let const_max c1 c2 = if const_compare c1 c2 >= 0 then c1 else c2
 
 (* The (lo, hi) bounds of each constant or interval head of [env],
    sorted by lower bound. The heads must be constants or intervals. *)
@@ -345,14 +362,12 @@ let sorted_intervals_of_env env =
   List.map extract_interval env
   |> List.sort (fun (l1, _) (l2, _) -> const_compare l1 l2)
 
-
 let inside c1 c2 d =
   const_compare c1 d <= 0 && const_compare d c2 <= 0
 
 let intersects c1 c2 c3 c4 =
   if const_compare c3 c1 <= 0 then const_compare c1 c4 <= 0
   else const_compare c3 c2 <= 0
-
 
 let records_args l1 l2 =
   (* Invariant: fields are already sorted by Typecore.type_label_a_list *)
@@ -1888,6 +1903,9 @@ let rec every_satisfiables pss qs = match qs.active with
           every_satisfiables (push_or_column pss) (push_or qs)
     | `Variant (l,_,r) when is_absent l r -> (* Ah Jacques... *)
         Unused
+    | (`Constant _ | `Interval _) ->
+        (* Intervals/constants: delay, let satisfiable handle it *)
+        every_satisfiables (push_no_or_column pss) (push_no_or qs)
     | #Patterns.Simple.view as view ->
         let q = { q with pat_desc = view } in
         (* standard case, filter matrix *)
@@ -1954,6 +1972,34 @@ let rec le_pat p q =
   | Tpat_alias(p,_,_,_,_), _ -> le_pat p q
   | _, Tpat_alias(q,_,_,_,_) -> le_pat p q
   | Tpat_constant(c1), Tpat_constant(c2) -> const_compare c1 c2 = 0
+  (* [le_pat p q] means: "q is subsumed by p", i.e.
+     forall V, V matches q implies V matches p.
+
+     The constant/interval and interval/constant arms below are NOT
+     symmetric, so they MUST remain two separate match arms (do not
+     merge them into a single [inside c1 c2 c] case: that would
+     wrongly assert that a singleton constant subsumes the whole
+     interval whenever the constant falls inside it, and corrupts
+     [get_mins] used by [check_partial]/[check_unused]).
+
+     * [{c}] subsumed by [[c1,c2]]  (Tpat_constant c, Tpat_interval):
+       "every value matching [c1,c2] also matches {c}".  True only
+       when the interval is a singleton covering [c], i.e.
+       c1 = c2 = c.  [Tpat_interval] has the invariant c1 < c2
+       (normalized in typecore.ml), so this arm yields [false] in
+       practice; we keep the explicit test so correctness does not
+       hinge on the invariant being preserved elsewhere.
+
+     * [[c1,c2]] subsumed by [{c}]  (Tpat_interval, Tpat_constant c):
+       "every value matching {c} also matches [c1,c2]".  True iff
+       [c] is in [c1,c2], i.e. [inside c1 c2 c].
+
+     * [[c1,c2]] subsumed by [[c3,c4]]: iff c1 <= c3 && c4 <= c2. *)
+  | Tpat_constant c, Tpat_interval (c1, c2) ->
+      const_compare c1 c = 0 && const_compare c2 c = 0
+  | Tpat_interval (c1, c2), Tpat_constant c -> inside c1 c2 c
+  | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+      const_compare c3 c1 >= 0 && const_compare c2 c4 >= 0
   | Tpat_construct(_,c1,ps,_), Tpat_construct(_,c2,qs,_) ->
       Data_types.equal_constr c1 c2 && le_pats ps qs
   | Tpat_variant(l1,Some p1,_), Tpat_variant(l2,Some p2,_) ->
@@ -2015,6 +2061,22 @@ let rec lub p q = match p.pat_desc,q.pat_desc with
 | Tpat_or (p1,p2,_),_     -> orlub p1 p2 q
 | _,Tpat_or (q1,q2,_)     -> orlub q1 q2 p (* Thanks god, lub is commutative *)
 | Tpat_constant c1, Tpat_constant c2 when const_compare c1 c2 = 0 -> p
+(* lub computes intersection: the set of values matched by both p and q.
+   constant /\ interval = constant (if inside), else Empty (falls through).
+   interval /\ interval = [max(lo), min(hi)], normalized to Tpat_constant
+   when lo = hi to avoid degenerate Tpat_interval(c,c). *)
+| ( Tpat_constant c, Tpat_interval (c1, c2)
+  | Tpat_interval (c1, c2), Tpat_constant c )
+    when inside c1 c2 c ->
+    make_pat (Tpat_constant c) p.pat_type p.pat_env
+| Tpat_interval (c1, c2), Tpat_interval (c3, c4)
+    when intersects c1 c2 c3 c4 ->
+    let lo = const_max c1 c3 and hi = const_min c2 c4 in
+    let desc =
+      if const_compare lo hi = 0 then Tpat_constant lo
+      else Tpat_interval (lo, hi)
+    in
+    make_pat desc p.pat_type p.pat_env
 | Tpat_tuple ps, Tpat_tuple qs ->
     let rs = tuple_lubs ps qs in
     make_pat (Tpat_tuple rs) p.pat_type p.pat_env
