@@ -142,7 +142,7 @@ let filter_matrix matcher pss =
               | NoMatch -> rem
               | OrPat   ->
                 match p.pat_desc with
-                | Tpat_or (p1,p2,_) -> filter_rec [(p1::ps) ;(p2::ps)]@rem
+                | Tpat_or (p1,p2,_) -> filter_rec ((p1::ps)::(p2::ps)::rem)
                 | _ -> assert false
             end
         end
@@ -753,7 +753,7 @@ let pat_as_constr = function
   | {pat_desc=Tpat_construct (_, cstr,_)} -> cstr
   | _ -> fatal_error "Matching.pat_as_constr"
 
-let group_constant_or_interval = function
+let group_constant_interval = function
   | {pat_desc= Tpat_constant _} -> true
   | {pat_desc= Tpat_interval _} -> true
   | _                           -> false
@@ -788,8 +788,8 @@ and group_lazy = function
 
 let get_group p = match p.pat_desc with
 | Tpat_any -> group_var
-| Tpat_constant _ -> group_constant_or_interval
-| Tpat_interval _ -> group_constant_or_interval
+| Tpat_constant _ -> group_constant_interval
+| Tpat_interval _ -> group_constant_interval
 | Tpat_construct _ -> group_constructor
 | Tpat_tuple _ -> group_tuple
 | Tpat_record _ -> group_record
@@ -1246,32 +1246,34 @@ let divide_line make_ctx make get_args pat ctx pm =
 *)
 
 
-
-let rec matcher_const cst p rem = match p.pat_desc with
+(* TODO: is this what we want? *)
+let rec matcher_const_interv (cst1, cst2) p rem = match p.pat_desc with
 | Tpat_or (p1,p2,_) ->
     begin try
-      matcher_const cst p1 rem with
-    | NoMatch -> matcher_const cst p2 rem
+      matcher_const_interv (cst1, cst2) p1 rem with
+    | NoMatch -> matcher_const_interv (cst1, cst2) p2 rem
     end
-| Tpat_constant c1 when const_compare c1 cst = 0 -> rem
+| Tpat_constant c1 when const_compare c1 cst1 = 0 && const_compare c1 cst2 = 0 -> rem
+| Tpat_interval (c1, c2) when const_compare c1 cst1 = 0 && const_compare c2 cst2 = 0 -> rem
 | Tpat_any    -> rem
 | _ -> raise NoMatch
 
-let get_key_constant caller = function
-  | {pat_desc= Tpat_constant cst} -> cst
+let get_key_constant_interval caller = function
+  | {pat_desc= Tpat_constant cst} -> (cst, cst)
+  | {pat_desc= Tpat_interval (cst1, cst2)} -> (cst1, cst2)
   | p ->
       prerr_endline ("BAD: "^caller) ;
       pretty_pat p ;
       assert false
 
-let get_args_constant _ rem = rem
+let get_args_constant_interval _ rem = rem
 
-let make_constant_matching p def ctx = function
+let make_constant_interval_matching p def ctx = function
     [] -> fatal_error "Matching.make_constant_matching"
   | (_ :: argl) ->
       let def =
         make_default
-          (matcher_const (get_key_constant "make" p)) def
+          (matcher_const_interv (get_key_constant_interval "make" p)) def
       and ctx =
         filter_ctx p  ctx in
       {pm = {cases = []; args = argl ; default = def} ;
@@ -1279,13 +1281,16 @@ let make_constant_matching p def ctx = function
         pat = normalize_pat p}
 
 
+ (* TODO: is this what we want? *)
+let eq_key_constant_interval (cst1l, cst1h) (cst2l, cst2h) =
+  const_compare cst1l cst2l = 0 && const_compare cst1h cst2h = 0
 
 
-let divide_constant ctx m =
+let divide_constant_interval ctx m =
   divide
-    make_constant_matching
-    (fun c d -> const_compare c d = 0) (get_key_constant "divide")
-    get_args_constant
+    make_constant_interval_matching
+    eq_key_constant_interval (get_key_constant_interval "divide")
+    get_args_constant_interval
     ctx m
 
 (* Matching against a constructor *)
@@ -1840,17 +1845,54 @@ let share_actions_tree sw d =
   let sw = List.map (fun (cst,j) -> cst,acts.(j)) sw in
   !hs,sw,d
 
+let next_float f = (* TODO: is this correct? *)
+  if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
+  else Int64.float_of_bits (Int64.pred (Int64.bits_of_float f))
+
+let next_string s =
+  let r = Bytes.create (String.length s + 1) in
+  Bytes.blit_string s 0 r 0 (String.length s);
+  Bytes.set r (String.length s) '\000';
+  Bytes.unsafe_to_string r
+
+let next_constant = function
+  | Const_int i -> if i = max_int then None
+    else Some (Const_int (succ i))
+  | Const_char c -> if Char.code c = 255 then None
+    else Some (Const_char (Char.chr ((Char.code c) + 1)))
+  | Const_int32 i -> if i = Int32.max_int then None
+    else Some (Const_int32 (Int32.succ i))
+  | Const_int64 i -> if i = Int64.max_int then None
+    else Some (Const_int64 (Int64.succ i))
+  | Const_nativeint i -> if i = Nativeint.max_int then None
+    else Some (Const_nativeint (Nativeint.succ i))
+  | Const_float (f, _) -> if f = infinity then None
+    else if f = max_float then Some (Const_float (infinity, None))
+    else if f = neg_infinity then Some (Const_float (min_float, None))
+    else if Pervasives.compare f nan = 0 then Some (Const_float (neg_infinity, None))
+    else Some (Const_float (next_float f, None))
+  | Const_string (s, o) -> Some (Const_string (next_string s, o))
+
 (* Note: dichotomic search requires sorted input with no duplicates *)
 let rec uniq_lambda_list sw = match sw with
   | []|[_] -> sw
-  | (c1,_ as p1)::((c2,_)::sw2 as sw1) ->
-      if const_compare c1 c2 = 0 then uniq_lambda_list (p1::sw2)
+  | ((c1l,c1h),_ as p1)::(((c2l,c2h),a2)::sw2 as sw1) ->
+      if const_compare c2h c1h <= 0 then uniq_lambda_list (p1::sw2)
+      else if const_compare c2l c1h <= 0 then
+        match next_constant c1h with
+        | None -> [p1]
+        | Some c2l -> p1::uniq_lambda_list (((c2l, c2h),a2)::sw2)
       else p1::uniq_lambda_list sw1
 
 let sort_lambda_list l =
   let l =
-    List.stable_sort (fun (x,_) (y,_) -> const_compare x y) l in
+    List.stable_sort (fun ((xl,xh),_) ((yl,yh),_) ->
+      let cmp = const_compare xl yl in
+      if cmp = 0 then const_compare xh yh else cmp) l in
   uniq_lambda_list l
+
+let has_non_constant_intervals l =
+  List.exists (fun ((c1, c2), _) -> const_compare c1 c2 <> 0) l
 
 let rec cut n l =
   if n = 0 then [],l
@@ -1860,7 +1902,8 @@ let rec cut n l =
 
 let rec do_tests_fail fail tst arg = function
   | [] -> fail
-  | (c, act)::rem ->
+  | ((c,c'), act)::rem ->
+      assert (const_compare c c' = 0);
       Lifthenelse
         (Lprim (tst, [arg ; Lconst (Const_base c)]),
          do_tests_fail fail tst arg rem,
@@ -1869,7 +1912,8 @@ let rec do_tests_fail fail tst arg = function
 let rec do_tests_nofail tst arg = function
   | [] -> fatal_error "Matching.do_tests_nofail"
   | [_,act] -> act
-  | (c,act)::rem ->
+  | ((c,c'),act)::rem ->
+      assert (const_compare c c' = 0);
       Lifthenelse
         (Lprim (tst, [arg ; Lconst (Const_base c)]),
          do_tests_nofail tst arg rem,
@@ -1880,20 +1924,30 @@ let make_test_sequence fail tst lt_tst arg const_lambda_list =
   let hs,const_lambda_list,fail =
     share_actions_tree const_lambda_list fail in
 
+  let do_tests const_lambda_list = match fail with
+  | None -> do_tests_nofail tst arg const_lambda_list
+  | Some fail -> do_tests_fail fail tst arg const_lambda_list
+  in
   let rec make_test_sequence const_lambda_list =
-    if List.length const_lambda_list >= 4 && lt_tst <> Pignore then
+    if List.length const_lambda_list >= 4
+        || has_non_constant_intervals const_lambda_list then
       split_sequence const_lambda_list
-    else match fail with
-    | None -> do_tests_nofail tst arg const_lambda_list
-    | Some fail -> do_tests_fail fail tst arg const_lambda_list
+    else
+      do_tests const_lambda_list
 
   and split_sequence const_lambda_list =
     let list1, list2 =
       cut (List.length const_lambda_list / 2) const_lambda_list in
-    Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base (fst(List.hd list2)))]),
+    Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base (fst(fst(List.hd list2))))]),
                 make_test_sequence list1, make_test_sequence list2)
   in
-  hs (make_test_sequence const_lambda_list)
+  if lt_tst = Pignore then
+    if has_non_constant_intervals const_lambda_list then
+      fatal_error "Matching.make_test_sequence" (* cannot match intervals with only non-equality *)
+    else
+      hs (do_tests const_lambda_list)
+  else
+    hs (make_test_sequence const_lambda_list)
 
 
 module SArg = struct
@@ -2010,12 +2064,12 @@ let lambda_of_int i =  Lconst (Const_base (Const_int i))
 
 let rec last def = function
   | [] -> def
-  | [x,_] -> x
+  | [(_,x),_] -> x
   | _::rem -> last def rem
 
 let get_edges low high l = match l with
 | [] -> low, high
-| (x,_)::_ -> x, last high l
+| ((low,high),_)::l -> low, last high l
 
 
 let as_interval_canfail fail low high l =
@@ -2035,43 +2089,45 @@ let as_interval_canfail fail low high l =
           [cur_low,cur_high,cur_act]
         else
           [(cur_low,cur_high,cur_act) ; (cur_high+1,high, 0)]
-    | ((i,act_i)::rem) as all ->
+    | (((il,ih),act_i)::rem) as all ->
+        assert (il > cur_high);
         let act_index = do_store "NO" act_i in
-        if cur_high+1= i then
+        if cur_high+1= il then
           if act_index=cur_act then
-            nofail_rec cur_low i cur_act rem
+            nofail_rec cur_low ih cur_act rem
           else if act_index=0 then
-            (cur_low,i-1, cur_act)::fail_rec i i rem
+            (cur_low, cur_high, cur_act)::fail_rec il ih rem
           else
-            (cur_low, i-1, cur_act)::nofail_rec i i act_index rem
+            (cur_low, cur_high, cur_act)::nofail_rec il ih act_index rem
         else if act_index = 0 then
           (cur_low, cur_high, cur_act)::
           fail_rec (cur_high+1) (cur_high+1) all
         else
           (cur_low, cur_high, cur_act)::
-          (cur_high+1,i-1,0)::
-          nofail_rec i i act_index rem
+          (cur_high+1,il-1,0)::
+          nofail_rec il ih act_index rem
 
   and fail_rec cur_low cur_high = function
     | [] -> [(cur_low, cur_high, 0)]
-    | (i,act_i)::rem ->
+    | ((il,ih),act_i)::rem ->
+        assert (il > cur_high);
         let index = do_store "YES" act_i in
-        if index=0 then fail_rec cur_low i rem
+        if index=0 then fail_rec cur_low ih rem
         else
-          (cur_low,i-1,0)::
-          nofail_rec i i index rem in
+          (cur_low,il-1,0)::
+          nofail_rec il ih index rem in
 
   let init_rec = function
     | [] -> []
-    | (i,act_i)::rem ->
+    | ((il,ih),act_i)::rem ->
         let index = do_store "INIT" act_i in
         if index=0 then
-          fail_rec low i rem
+          fail_rec low ih rem
         else
-          if low < i then
-            (low,i-1,0)::nofail_rec i i index rem
+          if low < il then
+            (low,il-1,0)::nofail_rec il ih index rem
           else
-            nofail_rec i i index rem in
+            nofail_rec il ih index rem in
 
   assert (do_store "FAIL" fail = 0) ; (* fail has action index 0 *)
   let r = init_rec l in
@@ -2083,29 +2139,31 @@ let as_interval_nofail l =
   let rec i_rec cur_low cur_high cur_act = function
     | [] ->
         [cur_low, cur_high, cur_act]
-    | (i,act)::rem ->
+    | ((il,ih),act)::rem ->
+        assert (il > cur_high);
         let act_index = store.act_store act in
         if act_index = cur_act then
-          i_rec cur_low i cur_act rem
+          i_rec cur_low ih cur_act rem
         else
           (cur_low, cur_high, cur_act)::
-          i_rec i i act_index rem in
+          i_rec il ih act_index rem in
   let inters = match l with
-  | (i,act)::rem ->
+  | ((il,ih),act)::rem ->
       let act_index = store.act_store act in
-      i_rec i i act_index rem
+      i_rec il ih act_index rem
   | _ -> assert false in
 
   Array.of_list inters, store
 
-
-let sort_int_lambda_list l =
-  List.sort
-    (fun (i1,_) (i2,_) ->
-      if i1 < i2 then -1
-      else if i2 < i1 then 1
-      else 0)
-    l
+ let sort_int_lambda_list l =
+   List.sort
+     (fun ((i1l,i1h),_) ((i2l,i2h),_) ->
+       if i1l < i2l then -1
+       else if i2l < i1l then 1
+       else if i1h < i2h then -1
+       else if i2h < i1h then 1
+       else 0)
+     l
 
 let as_interval fail low high l =
   let l = sort_int_lambda_list l in
@@ -2261,19 +2319,30 @@ and mk_failaction_pos partial seen ctx defs  =
     defs
 
 
-let combine_constant arg cst partial ctx def
+let prim_string_notequal =
+  Pccall{prim_name = "caml_string_notequal";
+         prim_arity = 2; prim_alloc = false;
+         prim_native_name = ""; prim_native_float = false}
+
+let prim_string_lessthan =
+  Pccall{prim_name = "caml_string_lessthan";
+         prim_arity = 2; prim_alloc = false;
+         prim_native_name = ""; prim_native_float = false}
+
+
+let combine_constant_interval arg cst partial ctx def
     (const_lambda_list, total, pats) =
   let fail, local_jumps = mk_failaction_neg partial ctx def in
   let lambda1 =
     match cst with
     | Const_int _ ->
         let int_lambda_list =
-          List.map (function Const_int n, l -> n,l | _ -> assert false)
+          List.map (function (Const_int n1, Const_int n2), l -> (n1, n2),l | _ -> assert false)
             const_lambda_list in
         call_switcher fail arg min_int max_int int_lambda_list
     | Const_char _ ->
         let int_lambda_list =
-          List.map (function Const_char c, l -> (Char.code c, l)
+          List.map (function (Const_char c1, Const_char c2), l -> ((Char.code c1, Char.code c2), l)
             | _ -> assert false)
             const_lambda_list in
         call_switcher fail arg 0 255 int_lambda_list
@@ -2283,14 +2352,19 @@ let combine_constant arg cst partial ctx def
    This partly applies to the native code compiler, which requires
    no duplicates *)
         let const_lambda_list = sort_lambda_list const_lambda_list in
-        let sw =
-          List.map
-            (fun (c,act) -> match c with
-            | Const_string (s,_) -> s,act
-            | _ -> assert false)
-            const_lambda_list in
-        let hs,sw,fail = share_actions_tree sw fail in
-        hs (Lstringswitch (arg,sw,fail))
+        if has_non_constant_intervals const_lambda_list then
+          make_test_sequence
+            fail prim_string_notequal prim_string_lessthan
+            arg const_lambda_list
+        else
+          let sw =
+            List.map
+              (function
+              | (Const_string (s1, _), _), act -> s1, act
+              | _ -> assert false)
+              const_lambda_list in
+          let hs,sw,fail = share_actions_tree sw fail in
+          hs (Lstringswitch (arg,sw,fail))
     | Const_float _ ->
         make_test_sequence
           fail
@@ -2314,6 +2388,12 @@ let combine_constant arg cst partial ctx def
   in lambda1,jumps_union local_jumps total
 
 
+let rec expand_intervals = function
+  | [] -> []
+  | ((i1,i2),a)::rem when i1 = i2 -> (i1,a)::expand_intervals rem
+  | ((i1,i2),a)::rem -> (i1,a)::expand_intervals (((i1+1,i2),a)::rem)
+
+let to_intervals l = List.map (fun (i,a) -> ((i,i),a)) l
 
 let split_cases tag_lambda_list =
   let rec split_rec = function
@@ -2321,8 +2401,8 @@ let split_cases tag_lambda_list =
     | (cstr, act) :: rem ->
         let (consts, nonconsts) = split_rec rem in
         match cstr with
-          Cstr_constant n -> ((n, act) :: consts, nonconsts)
-        | Cstr_block n    -> (consts, (n, act) :: nonconsts)
+          Cstr_constant n -> (((n,n), act) :: consts, nonconsts)
+        | Cstr_block n    -> (consts, ((n,n), act) :: nonconsts)
         | _ -> assert false in
   let const, nonconst = split_rec tag_lambda_list in
   sort_int_lambda_list const,
@@ -2401,7 +2481,7 @@ let combine_constructor arg ex_pat cstr partial ctx def
           match
             (cstr.cstr_consts, cstr.cstr_nonconsts, consts, nonconsts)
           with
-          | (1, 1, [0, act1], [0, act2]) ->
+          | (1, 1, [(0, 0), act1], [(0, 0), act2]) ->
               Lifthenelse(arg, act2, act1)
           | (n,_,_,[])  ->
               call_switcher None arg 0 (n-1) consts
@@ -2409,6 +2489,8 @@ let combine_constructor arg ex_pat cstr partial ctx def
               match same_actions nonconsts with
               | None ->
 (* Emit a switch, as bytecode implements this sophisticated instruction *)
+                  let consts = expand_intervals consts in
+                  let nonconsts = expand_intervals nonconsts in
                   let sw =
                     {sw_numconsts = cstr.cstr_consts; sw_consts = consts;
                      sw_numblocks = cstr.cstr_nonconsts; sw_blocks = nonconsts;
@@ -2501,7 +2583,7 @@ let combine_array arg kind partial ctx def
     let switch =
       call_switcher
         fail (Lvar newvar)
-        0 max_int len_lambda_list in
+        0 max_int (to_intervals len_lambda_list) in
     bind
       Alias newvar (Lprim(Parraylength kind, [arg])) switch in
   lambda1, jumps_union local_jumps total1
@@ -2770,11 +2852,11 @@ and do_compile_matching repr partial ctx arg pmh = match pmh with
       compile_no_test
         (divide_record lbl.lbl_all (normalize_pat pat))
         ctx_combine repr partial ctx pm
-  | Tpat_constant cst ->
+  | (Tpat_constant cst | Tpat_interval (cst, _)) ->
       compile_test
         (compile_match repr partial) partial
-        divide_constant
-        (combine_constant arg cst partial)
+        divide_constant_interval
+        (combine_constant_interval arg cst partial)
         ctx pm
   | Tpat_construct (_, cstr, _) ->
       compile_test
