@@ -3300,34 +3300,17 @@ let mk_failaction_pos arg_partial seen ctx defs =
   )
 
 (* [combine_constant] assembles the dispatch code for a column of
-   constants, which the division invariant guarantees to be pairwise
-   distinct (hence disjoint): an integer switch for [Const_int] and
-   [Const_char], a string switch for [Const_string], and comparison
-   test sequences for floats and boxed integers. Disjointness allows
-   reordering the cases freely; every strategy sorts them. *)
+   string or float constants, which the division invariant guarantees
+   to be pairwise distinct (hence disjoint): a string switch for
+   [Const_string], a comparison test sequence for [Const_float].
+   Disjointness allows reordering the cases freely; both strategies
+   sort them. All other constants go through
+   [combine_constant_interval]. *)
 let combine_constant loc arg cst partial ctx def
     (const_lambda_list, total, _pats) =
   let fail, local_jumps = mk_failaction_neg partial ctx def in
   let lambda1 =
     match (cst : Asttypes.constant) with
-    | Const_int _ ->
-        let int_lambda_list =
-          List.map
-            (function
-              | Asttypes.Const_int n, l -> (n, l)
-              | _ -> assert false)
-            const_lambda_list
-        in
-        call_switcher loc fail arg int_lambda_list
-    | Const_char _ ->
-        let int_lambda_list =
-          List.map
-            (function
-              | Asttypes.Const_char c, l -> (Char.code c, l)
-              | _ -> assert false)
-            const_lambda_list
-        in
-        call_switcher loc fail arg ~low:0 ~high:255 int_lambda_list
     | Const_string _ ->
         (* Note as the bytecode compiler may resort to dichotomic search,
    the clauses of stringswitch  are sorted with duplicates removed.
@@ -3347,21 +3330,10 @@ let combine_constant loc arg cst partial ctx def
     | Const_float _ ->
         make_test_sequence loc fail (Pfloatcomp CFneq) (Pfloatcomp CFlt) arg
           const_lambda_list
-    | Const_int32 _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pint32, Cne))
-          (Pbintcomp (Pint32, Clt))
-          arg const_lambda_list
-    | Const_int64 _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pint64, Cne))
-          (Pbintcomp (Pint64, Clt))
-          arg const_lambda_list
+    | Const_int _ | Const_char _ | Const_int32 _ | Const_int64 _
     | Const_nativeint _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pnativeint, Cne))
-          (Pbintcomp (Pnativeint, Clt))
-          arg const_lambda_list
+        (* routed to [combine_constant_interval] *)
+        Misc.fatal_error "Matching.combine_constant"
   in
   (lambda1, Jumps.union local_jumps total)
 
