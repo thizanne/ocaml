@@ -8,15 +8,12 @@ let f (x : int) = match x with
   | 0 .. 10 -> 1
   | 11 .. 20 -> 2;;
 [%%expect {|
-Line 2, characters 4-11:
+Lines 1-3, characters 18-17:
+1 | ..................match x with
 2 |   | 0 .. 10 -> 1
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-12:
-3 |   | 11 .. 20 -> 2;;
-        ^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+3 |   | 11 .. 20 -> 2..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -28,9 +25,9 @@ let g x = match x with
   | 5 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-11:
-2 |   | 0 .. 10 -> 1
-        ^^^^^^^
+Line 3, characters 4-5:
+3 |   | 5 -> 2
+        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
@@ -43,19 +40,9 @@ let h x = match x with
   | 3 .. 7 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-11:
-2 |   | 0 .. 10 -> 1
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 3, characters 4-10:
 3 |   | 3 .. 7 -> 2
         ^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 4, characters 4-5:
-4 |   | _ -> 3;;
-        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
@@ -100,10 +87,13 @@ let l (type a) (t : a ty) (x : a) = match t, x with
   | Bool, false -> 3;;
 [%%expect {|
 type _ ty = Int : int ty | Bool : bool ty
-Line 4, characters 4-16:
+Lines 3-6, characters 36-20:
+3 | ....................................match t, x with
 4 |   | Int, 0 .. 10 -> 1
-        ^^^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+5 |   | Bool, true -> 2
+6 |   | Bool, false -> 3..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "(Int, _)"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -114,15 +104,12 @@ let m (x : int32) = match x with
   | 0l .. 100l -> 1
   | 101l .. 200l -> 2;;
 [%%expect {|
-Line 2, characters 4-14:
+Lines 1-3, characters 20-21:
+1 | ....................match x with
 2 |   | 0l .. 100l -> 1
-        ^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-16:
-3 |   | 101l .. 200l -> 2;;
-        ^^^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+3 |   | 101l .. 200l -> 2..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -134,19 +121,9 @@ let n (x : int64) = match x with
   | 50L .. 80L -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-14:
-2 |   | 0L .. 100L -> 1
-        ^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 3, characters 4-14:
 3 |   | 50L .. 80L -> 2
         ^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 4, characters 4-5:
-4 |   | _ -> 3;;
-        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
@@ -158,15 +135,12 @@ let o (x : nativeint) = match x with
   | 0n .. 50n -> 1
   | 51n .. 100n -> 2;;
 [%%expect {|
-Line 2, characters 4-13:
+Lines 1-3, characters 24-20:
+1 | ........................match x with
 2 |   | 0n .. 50n -> 1
-        ^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-15:
-3 |   | 51n .. 100n -> 2;;
-        ^^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+3 |   | 51n .. 100n -> 2..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -177,15 +151,6 @@ let p (x : nativeint) = match x with
   | 0n .. 100n -> 1
   | _ -> 2;;
 [%%expect {|
-Line 2, characters 4-14:
-2 |   | 0n .. 100n -> 1
-        ^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-5:
-3 |   | _ -> 2;;
-        ^
-Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -196,15 +161,12 @@ let q x = match x with
   | 0 .. 5 -> 1
   | 7 .. 10 -> 2;;
 [%%expect {|
-Line 2, characters 4-10:
+Lines 1-3, characters 10-16:
+1 | ..........match x with
 2 |   | 0 .. 5 -> 1
-        ^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-11:
-3 |   | 7 .. 10 -> 2;;
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+3 |   | 7 .. 10 -> 2..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -231,19 +193,9 @@ let s x = match x with
   | 5 .. 20 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-11:
-2 |   | 0 .. 10 -> 1
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 3, characters 4-11:
 3 |   | 5 .. 20 -> 2
         ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 4, characters 4-5:
-4 |   | _ -> 3;;
-        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
@@ -256,16 +208,6 @@ let t x = match x with
   | _ -> 2
   | 11 .. 20 -> 3;;
 [%%expect {|
-Line 2, characters 4-11:
-2 |   | 0 .. 10 -> 1
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-5:
-3 |   | _ -> 2
-        ^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 4, characters 4-12:
 4 |   | 11 .. 20 -> 3;;
         ^^^^^^^^
@@ -281,19 +223,9 @@ let u x = match x with
   | 5 .. 10 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-10:
-2 |   | 0 .. 5 -> 1
-        ^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 3, characters 4-11:
 3 |   | 5 .. 10 -> 2
         ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 4, characters 4-5:
-4 |   | _ -> 3;;
-        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
@@ -341,15 +273,12 @@ let full_range32 (x : int32) = match x with
   | -2147483648l .. 0l -> 1
   | 1l .. 2147483647l -> 2;;
 [%%expect {|
-Line 2, characters 4-22:
+Lines 1-3, characters 31-26:
+1 | ...............................match x with
 2 |   | -2147483648l .. 0l -> 1
-        ^^^^^^^^^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-21:
-3 |   | 1l .. 2147483647l -> 2;;
-        ^^^^^^^^^^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
+3 |   | 1l .. 2147483647l -> 2..
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -363,24 +292,9 @@ let union_covered x = match x with
   | 5 .. 15 -> 3
   | _ -> 0;;
 [%%expect {|
-Line 2, characters 4-11:
-2 |   | 0 .. 10 -> 1
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 3, characters 4-12:
-3 |   | 11 .. 20 -> 2
-        ^^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
 Line 4, characters 4-11:
 4 |   | 5 .. 15 -> 3
         ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
-
-Line 5, characters 4-5:
-5 |   | _ -> 0;;
-        ^
 Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error

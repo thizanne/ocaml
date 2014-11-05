@@ -146,7 +146,8 @@ let all_coherent column =
     | Construct c, Construct c' ->
       c.cstr_consts = c'.cstr_consts
       && c.cstr_nonconsts = c'.cstr_nonconsts
-    | Constant c1, Constant c2 -> begin
+    | (Constant c1 | Interval (c1, _)),
+      (Constant c2 | Interval (c2, _)) -> begin
         match c1, c2 with
         | Const_char _, Const_char _
         | Const_int _, Const_int _
@@ -284,6 +285,14 @@ let const_compare x y =
     |Const_nativeint _
     ), _ -> Stdlib.compare x y
 
+let inside c1 c2 d =
+  const_compare c1 d <= 0 && const_compare d c2 <= 0
+
+let intersects c1 c2 c3 c4 =
+  if const_compare c3 c1 <= 0 then const_compare c1 c4 <= 0
+  else const_compare c3 c2 <= 0
+
+
 let records_args l1 l2 =
   (* Invariant: fields are already sorted by Typecore.type_label_a_list *)
   let rec combine r1 r2 l1 l2 = match l1,l2 with
@@ -335,6 +344,11 @@ module Compat
       l1=l2 && ocompat op1 op2
   | Tpat_constant c1, Tpat_constant c2 ->
       const_compare c1 c2 = 0
+  | Tpat_constant c, Tpat_interval (c1, c2)
+  | Tpat_interval (c1, c2), Tpat_constant c ->
+      inside c1 c2 c
+  | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+      intersects c1 c2 c3 c4
   | Tpat_tuple labeled_ps, Tpat_tuple labeled_qs ->
       tuple_compat labeled_ps labeled_qs
   | Tpat_lazy p, Tpat_lazy q -> compat p q
@@ -415,6 +429,11 @@ let simple_match d h =
   | Variant { tag = t1; _ }, Variant { tag = t2 } ->
       t1 = t2
   | Constant c1, Constant c2 -> const_compare c1 c2 = 0
+  | Constant c, Interval (c1, c2)
+  | Interval (c1, c2), Constant c ->
+      inside c1 c2 c
+  | Interval (c1, c2), Interval (d1, d2) ->
+      intersects c1 c2 d1 d2
   | Lazy, Lazy -> true
   | Record _, Record _ -> true
   | Tuple lbls1, Tuple lbls2 -> lbls1 = lbls2
