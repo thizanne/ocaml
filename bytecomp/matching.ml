@@ -2213,15 +2213,15 @@ let mk_failaction_neg partial ctx def = match partial with
 | Partial ->
     begin match def with
     | (_,idef)::_ ->
-        Some (Lstaticraise (idef,[])),[],jumps_singleton idef ctx
+        Some (Lstaticraise (idef,[])),jumps_singleton idef ctx
     | _ ->
        (* Act as Total, this means
           If no appropriate default matrix exists,
           then this switch cannot fail *)
-        None, [], jumps_empty
+        None, jumps_empty
     end
 | Total ->
-    None, [], jumps_empty
+    None, jumps_empty
 
 
 
@@ -2263,9 +2263,7 @@ and mk_failaction_pos partial seen ctx defs  =
 
 let combine_constant arg cst partial ctx def
     (const_lambda_list, total, pats) =
-  let fail, to_add, local_jumps =
-    mk_failaction_neg partial ctx def in
-  let const_lambda_list = to_add@const_lambda_list in
+  let fail, local_jumps = mk_failaction_neg partial ctx def in
   let lambda1 =
     match cst with
     | Const_int _ ->
@@ -2346,9 +2344,7 @@ let combine_constructor arg ex_pat cstr partial ctx def
     (tag_lambda_list, total1, pats) =
   if cstr.cstr_consts < 0 then begin
     (* Special cases for extensions *)
-    let fail, to_add, local_jumps =
-      mk_failaction_neg partial ctx def in
-    let tag_lambda_list = to_add@tag_lambda_list in
+    let fail, local_jumps = mk_failaction_neg partial ctx def in
     let lambda1 =
       let consts, nonconsts = split_extension_cases tag_lambda_list in
       let default, consts, nonconsts =
@@ -2461,14 +2457,13 @@ let combine_variant row arg partial ctx def (tag_lambda_list, total1, pats) =
     Lifthenelse(Lprim (Pisint, [arg]), if_int, if_block) in
   let sig_complete =  List.length tag_lambda_list = !num_constr
   and one_action = same_actions tag_lambda_list in
-  let fail, to_add, local_jumps =
+  let fail, local_jumps =
     if
       sig_complete  || (match partial with Total -> true | _ -> false)
     then
-      None, [], jumps_empty
+      None, jumps_empty
     else
       mk_failaction_neg partial ctx def in
-  let tag_lambda_list = to_add@tag_lambda_list in
   let (consts, nonconsts) = split_cases tag_lambda_list in
   let lambda1 = match fail, one_action with
   | None, Some act -> act
@@ -2500,8 +2495,7 @@ let combine_variant row arg partial ctx def (tag_lambda_list, total1, pats) =
 
 let combine_array arg kind partial ctx def
     (len_lambda_list, total1, pats)  =
-  let fail, to_add, local_jumps = mk_failaction_neg partial  ctx def in
-  let len_lambda_list = to_add @ len_lambda_list in
+  let fail, local_jumps = mk_failaction_neg partial  ctx def in
   let lambda1 =
     let newvar = Ident.create "len" in
     let switch =
@@ -2604,8 +2598,8 @@ let compile_test compile_fun partial divide combine ctx to_match =
   match c_div with
   | [],_,_ ->
      begin match mk_failaction_neg partial ctx to_match.default with
-     | None,_,_ -> raise Unused
-     | Some l,_,total -> l,total
+     | None,_ -> raise Unused
+     | Some l,total -> l,total
      end
   | _ ->
       combine ctx to_match.default c_div
