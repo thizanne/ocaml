@@ -285,6 +285,67 @@ let const_compare x y =
     |Const_nativeint _
     ), _ -> Stdlib.compare x y
 
+(* Interval arithmetic helpers.
+
+   [next_constant c] and [prev_constant c] return the successor/predecessor
+   of [c] in its type, or [None] at type boundaries (e.g. max_int, '\255').
+   Returning [None] prevents arithmetic overflow.
+
+   [inside c1 c2 d]       = d in [c1, c2]  (closed interval)
+   [intersects c1 c2 c3 c4] = [c1,c2] /\ [c3,c4] <> {}
+     Correctness: case-split on which interval starts first;
+     if c3 <= c1 then overlap iff c1 <= c4, else overlap iff c3 <= c2. *)
+
+let next_constant = function
+  | Const_char c ->
+      if c = '\255' then None
+      else Some (Const_char (Char.chr (Char.code c + 1)))
+  | Const_int i ->
+      if i = max_int then None else Some (Const_int (i + 1))
+  | Const_int32 i ->
+      if i = Int32.max_int then None else Some (Const_int32 (Int32.succ i))
+  | Const_int64 i ->
+      if i = Int64.max_int then None else Some (Const_int64 (Int64.succ i))
+  | Const_nativeint i ->
+      if i = Nativeint.max_int then None
+      else Some (Const_nativeint (Nativeint.succ i))
+  | Const_string _ | Const_float _ ->
+      Misc.fatal_error "Parmatch.next_constant"
+
+let prev_constant = function
+  | Const_char c ->
+      if c = '\000' then None
+      else Some (Const_char (Char.chr (Char.code c - 1)))
+  | Const_int i ->
+      if i = min_int then None else Some (Const_int (i - 1))
+  | Const_int32 i ->
+      if i = Int32.min_int then None else Some (Const_int32 (Int32.pred i))
+  | Const_int64 i ->
+      if i = Int64.min_int then None else Some (Const_int64 (Int64.pred i))
+  | Const_nativeint i ->
+      if i = Nativeint.min_int then None
+      else Some (Const_nativeint (Nativeint.pred i))
+  | Const_string _ | Const_float _ ->
+      Misc.fatal_error "Parmatch.prev_constant"
+
+let is_least_constant c = Option.is_none (prev_constant c)
+let const_max c1 c2 = if const_compare c1 c2 >= 0 then c1 else c2
+
+
+(* The (lo, hi) bounds of each constant or interval head of [env],
+   sorted by lower bound. The heads must be constants or intervals. *)
+let sorted_intervals_of_env env =
+  let open Patterns.Head in
+  let extract_interval (d, _) =
+    match d.pat_desc with
+    | Constant c -> (c, c)
+    | Interval (c1, c2) -> (c1, c2)
+    | _ -> assert false
+  in
+  List.map extract_interval env
+  |> List.sort (fun (l1, _) (l2, _) -> const_compare l1 l2)
+
+
 let inside c1 c2 d =
   const_compare c1 d <= 0 && const_compare d c2 <= 0
 
@@ -859,10 +920,35 @@ let full_match closing env =  match env with
           (fun (tag,f) ->
             row_field_repr f = Rabsent || List.mem tag fields)
           (row_fields row)
-  | Constant Const_char _ ->
-      List.length env = 256
-  | Constant _
-  | Interval _
+  | Constant (Const_string _ | Const_float _) -> false
+  | Constant _ | Interval _ ->
+      (* Full coverage check for integer/char types:
+         Sort intervals by lower bound, then walk left-to-right
+         verifying contiguous coverage from the type minimum
+         (is_least_constant) to the type maximum (next_constant
+         returning None). A gap between consecutive intervals
+         means the match is not exhaustive. *)
+      let interv = sorted_intervals_of_env env in
+      begin match interv with
+      | [] -> assert false
+      | (l, _) :: _ when not (is_least_constant l) -> false
+      | (_, h) :: rem ->
+          let rec check_from max = function
+            | [] ->
+                begin match next_constant max with
+                | None -> true   (* max is greatest element of type *)
+                | Some _ -> false
+                end
+            | (l, _) :: _ when
+                (match next_constant max with
+                 | None -> false
+                 | Some next -> const_compare l next > 0) ->
+                false  (* gap between max and next interval *)
+            | (_, h) :: rem ->
+                check_from (const_max max h) rem
+          in
+          check_from h rem
+      end
   | Array _ -> false
   | Tuple _
   | Record _
@@ -1080,55 +1166,7 @@ let build_other ext env =
                     make_pat (Tpat_or (pat, p_res, None)) d.pat_type d.pat_env)
                   pat other_pats
             end
-      | Constant Const_char _ ->
-          let all_chars =
-            List.map
-              (fun (p,_) -> match p.pat_desc with
-              | Constant (Const_char c) -> c
-              | _ -> assert false)
-              env
-          in
-          let rec find_other i imax =
-            if i > imax then raise Not_found
-            else
-              let ci = Char.chr i in
-              if List.mem ci all_chars then
-                find_other (i+1) imax
-              else
-                make_pat (Tpat_constant (Const_char ci)) d.pat_type d.pat_env
-          in
-          let rec try_chars = function
-            | [] -> Patterns.omega
-            | (c1,c2) :: rest ->
-                try
-                  find_other (Char.code c1) (Char.code c2)
-                with
-                | Not_found -> try_chars rest
-          in
-          try_chars
-            [ 'a', 'z' ; 'A', 'Z' ; '0', '9' ;
-              ' ', '~' ; Char.chr 0 , Char.chr 255]
-      | Constant Const_int _ ->
-          build_other_constant
-            (function Constant(Const_int i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int i))
-            0 succ d env
-      | Constant Const_int32 _ ->
-          build_other_constant
-            (function Constant(Const_int32 i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int32 i))
-            0l Int32.succ d env
-      | Constant Const_int64 _ ->
-          build_other_constant
-            (function Constant(Const_int64 i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int64 i))
-            0L Int64.succ d env
-      | Constant Const_nativeint _ ->
-          build_other_constant
-            (function Constant(Const_nativeint i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_nativeint i))
-            0n Nativeint.succ d env
-      | Constant Const_string _ ->
+      | Constant (Const_string _) ->
           build_other_constant
             (function Constant(Const_string (s, _, _)) -> String.length s
                     | _ -> assert false)
@@ -1136,12 +1174,101 @@ let build_other ext env =
                Tpat_constant
                  (Const_string(String.make i '*',Location.none,None)))
             0 succ d env
-      | Constant Const_float _ ->
+      | Constant (Const_float _) ->
           build_other_constant
             (function Constant(Const_float f) -> float_of_string f
                     | _ -> assert false)
             (function f -> Tpat_constant(Const_float (string_of_float f)))
             0.0 (fun f -> f +. 1.0) d env
+      | Constant _ | Interval _ ->
+          (* Find an uncovered value for the counter-example.
+             First, extract all constants/intervals and merge
+             overlapping or touching ranges.  Then search for
+             a gap:
+             - For chars, scan predefined human-readable ranges
+               so counter-examples prefer 'a'..'z' over '\000'.
+             - For integers, try zero first then scan after each
+               merged interval.
+             The assert false at the end of each branch is safe:
+             if no gap exists, full_match would have returned true
+             and we wouldn't be here. *)
+          let interv = sorted_intervals_of_env env in
+          (* Merge overlapping or touching intervals into a
+             minimal sorted list of disjoint ranges. *)
+          let merged =
+            List.fold_left (fun acc (l, h) ->
+              match acc with
+              | [] -> [(l, h)]
+              | (al, ah) :: rest ->
+                  match next_constant ah with
+                  | Some next when const_compare l next <= 0 ->
+                      (* overlapping or touching: extend *)
+                      (al, const_max ah h) :: rest
+                  | _ ->
+                      (* disjoint: start a new range *)
+                      (l, h) :: acc
+            ) [] interv
+            |> List.rev
+          in
+          let not_covered c =
+            not (List.exists (fun (l, h) -> inside l h c) merged)
+          in
+          let cst = fst (List.hd interv) in
+          let result = match cst with
+            | Const_char _ ->
+                (* Scan predefined ranges in human-readable order
+                   so that counter-examples like 'a' or '0' are
+                   preferred over '\000'. *)
+                let rec find_in_range i imax =
+                  if i > imax then None
+                  else
+                    let ci = Const_char (Char.chr i) in
+                    if not_covered ci then Some ci
+                    else find_in_range (i + 1) imax
+                in
+                let rec try_ranges = function
+                  | [] -> assert false
+                  | (c1, c2) :: rest ->
+                      match find_in_range (Char.code c1) (Char.code c2) with
+                      | Some c -> c
+                      | None -> try_ranges rest
+                in
+                try_ranges
+                  ['a', 'z'; 'A', 'Z'; '0', '9';
+                   ' ', '~'; Char.chr 0, Char.chr 255]
+            | _ ->
+                (* Try zero first (common case), then scan gaps
+                   just after the end of each merged interval,
+                   then before the first interval. *)
+                let const_zero = function
+                  | Const_int _ -> Const_int 0
+                  | Const_int32 _ -> Const_int32 0l
+                  | Const_int64 _ -> Const_int64 0L
+                  | Const_nativeint _ -> Const_nativeint 0n
+                  | _ -> assert false
+                in
+                let zero = const_zero cst in
+                if not_covered zero then zero
+                else
+                  let rec find_gap = function
+                    | [] -> None
+                    | (_, h) :: rest ->
+                        match next_constant h with
+                        | Some next when not_covered next -> Some next
+                        | _ -> find_gap rest
+                  in
+                  match find_gap merged with
+                  | Some c -> c
+                  | None ->
+                      (* Try before the first interval *)
+                      match merged with
+                      | (l, _) :: _ ->
+                          (match prev_constant l with
+                           | Some c -> c
+                           | None -> assert false)
+                      | [] -> assert false
+          in
+          make_pat (Tpat_constant result) d.pat_type d.pat_env
       | Array (am, _) ->
           let all_lengths =
             List.map

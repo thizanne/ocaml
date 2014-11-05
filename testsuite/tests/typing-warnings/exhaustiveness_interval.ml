@@ -13,7 +13,7 @@ Lines 1-3, characters 18-17:
 2 |   | 0 .. 10 -> 1
 3 |   | 11 .. 20 -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "_"
+  Here is an example of a case that is not matched: "21"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -93,7 +93,7 @@ Lines 3-6, characters 36-20:
 5 |   | Bool, true -> 2
 6 |   | Bool, false -> 3..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "(Int, _)"
+  Here is an example of a case that is not matched: "(Int, 11)"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -109,7 +109,7 @@ Lines 1-3, characters 20-21:
 2 |   | 0l .. 100l -> 1
 3 |   | 101l .. 200l -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "_"
+  Here is an example of a case that is not matched: "201l"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -140,7 +140,7 @@ Lines 1-3, characters 24-20:
 2 |   | 0n .. 50n -> 1
 3 |   | 51n .. 100n -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "_"
+  Here is an example of a case that is not matched: "101n"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -166,7 +166,7 @@ Lines 1-3, characters 10-16:
 2 |   | 0 .. 5 -> 1
 3 |   | 7 .. 10 -> 2..
 Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "_"
+  Here is an example of a case that is not matched: "6"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -273,12 +273,6 @@ let full_range32 (x : int32) = match x with
   | -2147483648l .. 0l -> 1
   | 1l .. 2147483647l -> 2;;
 [%%expect {|
-Lines 1-3, characters 31-26:
-1 | ...............................match x with
-2 |   | -2147483648l .. 0l -> 1
-3 |   | 1l .. 2147483647l -> 2..
-Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-  Here is an example of a case that is not matched: "_"
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
