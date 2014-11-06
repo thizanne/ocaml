@@ -145,6 +145,8 @@ let const_greatest_element = function
 | Const_float _ -> Const_float (infinity, None)
 | Const_string _ -> raise Not_found
 
+let const_min x y = if const_compare x y <= 0 then x else y
+
 let const_max x y = if const_compare x y >= 0 then x else y
 
 
@@ -1667,6 +1669,14 @@ let rec lub p q = match p.pat_desc,q.pat_desc with
 | Tpat_or (p1,p2,_),_     -> orlub p1 p2 q
 | _,Tpat_or (q1,q2,_)     -> orlub q1 q2 p (* Thanks god, lub is commutative *)
 | Tpat_constant c1, Tpat_constant c2 when const_compare c1 c2 = 0 -> p
+| ( Tpat_constant c1, Tpat_interval (c2, c3)
+  | Tpat_interval (c2, c3), Tpat_constant c1 )
+    when const_compare c1 c3 <= 0 && const_compare c3 c2 <= 0 -> q
+| Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+  if (if const_compare c1 c3 >= 0 then const_compare c1 c4 <= 0
+    else const_compare c3 c2 <= 0) then
+    { p with pat_desc = Tpat_interval (const_max c1 c3, const_min c2 c4) }
+  else raise Empty
 | Tpat_tuple ps, Tpat_tuple qs ->
     let rs = lubs ps qs in
     make_pat (Tpat_tuple rs) p.pat_type p.pat_env
