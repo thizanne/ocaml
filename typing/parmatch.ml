@@ -41,6 +41,113 @@ let omega_list l = List.map (fun _ -> omega) l
 
 let zero = make_pat (Tpat_constant (Const_int 0)) Ctype.none Env.empty
 
+(******************)
+(* Constant utils *)
+(******************)
+
+(* TODO: is this correct? *)
+let next_float f =
+  if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
+  else Int64.float_of_bits (Int64.pred (Int64.bits_of_float f))
+
+let prev_float f = -. (next_float (-. f))
+
+let next_string s =
+  let len = String.length s in
+  let r = Bytes.create (len + 1) in
+  Bytes.blit_string s 0 r 0 len;
+  Bytes.set r len '\000';
+  Bytes.unsafe_to_string r
+
+let prev_string s =
+  let len = String.length s in
+  let c = Char.code (s.[len - 1]) in
+  if c = 0 then
+    Bytes.sub_string (Bytes.unsafe_of_string s) 0 len
+  else
+    let r = Bytes.of_string s in
+    Bytes.set r (len - 1) (Char.chr (c + 1));
+    Bytes.unsafe_to_string r
+
+let next_constant = function
+  | Const_int i -> if i = max_int then None
+    else Some (Const_int (succ i))
+  | Const_char c -> if Char.code c = 255 then None
+    else Some (Const_char (Char.chr ((Char.code c) + 1)))
+  | Const_int32 i -> if i = Int32.max_int then None
+    else Some (Const_int32 (Int32.succ i))
+  | Const_int64 i -> if i = Int64.max_int then None
+    else Some (Const_int64 (Int64.succ i))
+  | Const_nativeint i -> if i = Nativeint.max_int then None
+    else Some (Const_nativeint (Nativeint.succ i))
+  | Const_float (f, _) -> if f = infinity then None
+    else if f = max_float then Some (Const_float (infinity, None))
+    else if f = neg_infinity then Some (Const_float (min_float, None))
+    else if Pervasives.compare f nan = 0 then Some (Const_float (neg_infinity, None))
+    else Some (Const_float (next_float f, None))
+  | Const_string (s, o) -> Some (Const_string (next_string s, o))
+
+let prev_constant = function
+  | Const_int i -> if i = min_int then None
+    else Some (Const_int (pred i))
+  | Const_char c -> if Char.code c = 0 then None
+    else Some (Const_char (Char.chr ((Char.code c) - 1)))
+  | Const_int32 i -> if i = Int32.min_int then None
+    else Some (Const_int32 (Int32.pred i))
+  | Const_int64 i -> if i = Int64.min_int then None
+    else Some (Const_int64 (Int64.pred i))
+  | Const_nativeint i -> if i = Nativeint.min_int then None
+    else Some (Const_nativeint (Nativeint.pred i))
+  | Const_float (f, _) -> if Pervasives.compare f nan = 0 then None
+    else if f = neg_infinity then Some (Const_float (nan, None))
+    else if f = min_float then Some (Const_float (neg_infinity, None))
+    else if f = infinity then Some (Const_float (max_float, None))
+    else Some (Const_float (prev_float f, None))
+  | Const_string ("", _) -> None
+  | Const_string (s, o) -> Some (Const_string (prev_string s, o))
+
+let const_compare x y =
+  match x,y with
+  | Const_float (f1, _), Const_float (f2, _) ->
+      Pervasives.compare f1 f2
+  | Const_string (s1, _), Const_string (s2, _) ->
+      String.compare s1 s2
+  | _, _ -> Pervasives.compare x y
+
+let const_interv_compare (l1,h1) (l2,h2) =
+  let cmp = const_compare l1 l2 in
+  if cmp = 0 then const_compare h1 h2 else cmp
+
+let const_zero = function
+| Const_int _ -> Const_int 0
+| Const_int32 _ -> Const_int32 0l
+| Const_int64 _ -> Const_int64 0L
+| Const_nativeint _ -> Const_nativeint 0n
+| Const_char _ -> Const_char 'a'
+| Const_float _ -> Const_float (0., None)
+| Const_string _ -> Const_string ("", None)
+
+let const_least_element = function
+| Const_int _ -> Const_int min_int
+| Const_int32 _ -> Const_int32 Int32.min_int
+| Const_int64 _ -> Const_int64 Int64.min_int
+| Const_nativeint _ -> Const_nativeint Nativeint.min_int
+| Const_char _ -> Const_char '\000'
+| Const_float _ -> Const_float (nan, None)
+| Const_string _ -> Const_string ("", None)
+
+let const_greatest_element = function
+| Const_int _ -> Const_int max_int
+| Const_int32 _ -> Const_int32 Int32.max_int
+| Const_int64 _ -> Const_int64 Int64.max_int
+| Const_nativeint _ -> Const_nativeint Nativeint.max_int
+| Const_char _ -> Const_char '\255'
+| Const_float _ -> Const_float (infinity, None)
+| Const_string _ -> raise Not_found
+
+let const_max x y = if const_compare x y >= 0 then x else y
+
+
 (***********************)
 (* Compatibility check *)
 (***********************)
@@ -52,14 +159,6 @@ let is_absent tag row = Btype.row_field tag !row = Rabsent
 let is_absent_pat p = match p.pat_desc with
 | Tpat_variant (tag, _, row) -> is_absent tag row
 | _ -> false
-
-let const_compare x y =
-  match x,y with
-  | Const_float (f1, _), Const_float (f2, _) ->
-      Pervasives.compare f1 f2
-  | Const_string (s1, _), Const_string (s2, _) ->
-      String.compare s1 s2
-  | _, _ -> Pervasives.compare x y
 
 let records_args l1 l2 =
   (* Invariant: fields are already sorted by Typecore.type_label_a_list *)
@@ -635,14 +734,13 @@ let clean_env env =
   in
   loop env
 
-let full_interval_union global_min global_max li =
-  List.fold_left
-    (fun (min_, max_) ({pat_desc}, _) ->
-       match pat_desc with
-       | Tpat_interval (x, y) -> min min_ x, max max_ y
-       | _ -> assert false)
-    (global_max, global_min) li
-    = (global_min, global_max)
+let env_extract_intervals env =
+  List.map
+    (function {pat_desc = Tpat_constant cst}, _ -> cst, cst
+    | {pat_desc = Tpat_interval (cst1, cst2)}, _ -> cst1, cst2
+    | _ -> assert false)
+    env
+
 
 let full_match ignore_generalized closing env =  match env with
 | ({pat_desc = Tpat_construct(_,c,_);pat_type=typ},_) :: _ ->
@@ -680,41 +778,23 @@ let full_match ignore_generalized closing env =  match env with
         (fun (tag,f) ->
           Btype.row_field_repr f = Rabsent || List.mem tag fields)
         row.row_fields
-| ({pat_desc = Tpat_constant(Const_char _)},_) :: _ ->
-    List.length env = 256
-(* TODO
-The lines with Tpat_interval are probably not correct
-*)
-| ({pat_desc = Tpat_interval(Const_char _, Const_char _)},_) :: _ ->
-    full_interval_union
-      (Const_char '\000')
-      (Const_char '\255')
-      env
-| ({pat_desc = Tpat_interval (Const_int _, Const_int _)}, _) :: _ ->
-    full_interval_union
-      (Const_int Pervasives.min_int)
-      (Const_int Pervasives.max_int)
-      env
-| ({pat_desc = Tpat_interval (Const_int32 _, Const_int32 _)}, _) :: _ ->
-    full_interval_union
-      (Const_int32 Int32.min_int)
-      (Const_int32 Int32.max_int)
-      env
-| ({pat_desc = Tpat_interval (Const_int64 _, Const_int64 _)}, _) :: _ ->
-    full_interval_union
-      (Const_int64 Int64.min_int)
-      (Const_int64 Int64.max_int)
-      env
-| ({pat_desc = Tpat_interval (Const_nativeint _, Const_nativeint _)}, _) :: _ ->
-    full_interval_union
-      (Const_nativeint Nativeint.min_int)
-      (Const_nativeint Nativeint.max_int)
-      env
-| ({pat_desc = Tpat_interval (Const_string _, Const_string _)}, _) :: _
-| ({pat_desc = Tpat_interval (Const_float _, Const_float _)}, _) :: _ ->
-    (* Ranges of string or float (because of NaN) cannot be exhaustive *)
-    false
-| ({pat_desc = Tpat_constant(_)},_) :: _ -> false
+| ({pat_desc = Tpat_constant (Const_string _) | Tpat_interval (Const_string _, _)},_) :: _ ->
+  (* Ranges of strings cannot be exhaustive yet (because _ cannot be the upperbound) *)
+  false
+| ({pat_desc = Tpat_constant cst | Tpat_interval (cst, _)},_) :: _ ->
+  let interv = env_extract_intervals env in
+  let interv = List.sort const_interv_compare interv in
+  let rec check_from max l =
+    match l, next_constant max with
+    | _, None -> true (* max is the greatest element *)
+    | [], _ -> false
+    | (l, _)::_, Some next when const_compare l next > 0 -> false (* disjoint and non-touching intervals *)
+    | (_, h)::rem, _ -> check_from (const_max max h) rem (* consecutive or overlapping intervals *)
+  in
+  (match interv with
+  | [] -> assert false
+  | (l,_)::_ when const_compare l (const_least_element cst) <> 0 -> false
+  | (_,h)::rem -> check_from h rem)
 | ({pat_desc = Tpat_tuple(_)},_) :: _ -> true
 | ({pat_desc = Tpat_record(_)},_) :: _ -> true
 | ({pat_desc = Tpat_array(_)},_) :: _ -> false
@@ -820,13 +900,85 @@ let complete_constrs p all_tags =
 
 (* Auxiliary for build_other *)
 
-let build_other_constant proj make first next p env =
-  let all = List.map (fun (p, _) -> proj p.pat_desc) env in
-  let rec try_const i =
-    if List.mem i all
-    then try_const (next i)
-    else make_pat (make i) p.pat_type p.pat_env
-  in try_const first
+let build_other_constant cst p interv =
+  let interv = List.sort const_interv_compare interv in
+  let rec merge = function
+  | [] -> []
+  | [i] -> [i]
+  | (l1,h1)::(l2,h2)::rem ->
+    match next_constant h1 with
+    | None -> [l1, h1]
+    | Some h' when const_compare l2 h' > 0 -> (l1, h1)::(merge ((l2,h2)::rem))
+    | _ -> merge ((l1, const_max h1 h2)::rem)
+  in
+  let interv = merge interv in (* list of strictly disjoint intervals *)
+  let rec find_value value = function
+  | [] -> None
+  | ((l,h)::_) when const_compare value l < 0 -> None
+  | (_,h)::rem when const_compare h value < 0 -> find_value value rem
+  | (l,h)::_ -> Some (l, h) (* the interval contains the value *)
+  in
+  match interv with
+  | [l, h] when prev_constant l = None && next_constant h = None -> omega
+  | _ ->
+    (* from here, we know the pattern is not exhaustive *)
+    (* let's first try zero *)
+    let zero = const_zero cst in
+    let other = match find_value zero interv, cst with
+    | None, _ -> zero
+    | Some _, Const_char _ ->
+      let rec try_chars = function
+      | [] -> assert false
+      | (cl, ch)::rem ->
+        match find_value (Const_char cl) interv with
+        | None -> Const_char cl
+        | Some (_, Const_char h) when h < ch -> Const_char (Char.chr ((Char.code h) + 1))
+        | Some _ -> try_chars rem
+      in
+      try_chars ['a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
+    | Some _, Const_string _ ->
+      (* for strings, try to make a string composed of chars from specific ranges *)
+      let rec try_chars = function
+      | [] -> assert false
+      | (cl, ch)::rem ->
+        let rec try_string s =
+          let sc = Const_string (s, None) in
+          match find_value sc interv with
+          | None -> sc
+          | Some (_, Const_string (h, _)) ->
+            let rec first_lt_ch i =
+              if i > String.length h then Some (i, cl)
+              else if h.[i] > ch then None
+              else if h.[i] < ch then Some (i, min cl (Char.chr (Char.code h.[i] + 1)))
+              else first_lt_ch (i+1)
+            in
+            begin match first_lt_ch 0 with
+            | None -> try_chars rem (* the pattern contain all [cl-ch]* strings *)
+            | Some (i, c) -> assert (i > 1);
+              (* we found a string that is not in the interval containing s,
+              however it may be in another interval *)
+              let r = Bytes.create i in
+              Bytes.blit_string h 0 r 0 (i-1);
+              Bytes.set r (i-1) c;
+              try_string (Bytes.unsafe_to_string r)
+            end
+          | Some _ -> assert false
+        in
+        try_string (String.make 1 cl)
+      in
+      try_chars ['*', '*'; 'a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
+    (* | Some _, Const_float _ -> failwith "TODO: find friendly values" *)
+    | Some (l,h), _ ->
+      (* find the first positive value not in the pattern,
+         otherwise the first (from zero) negative value not in the pattern *)
+      match next_constant h with
+      | Some v -> v
+      | None -> match prev_constant l with
+        | None -> assert false (* we know the pattern is not exhaustive *)
+        | Some v -> v
+    in
+    make_pat (Tpat_constant other) p.pat_type p.pat_env
+
 
 (*
   Builds a pattern that is incompatible with all patterns in
@@ -879,67 +1031,8 @@ let build_other ext env =  match env with
             make_pat (Tpat_or (pat, p_res, None)) p.pat_type p.pat_env)
           pat other_pats
     end
-| ({pat_desc = Tpat_constant(Const_char _)} as p,_) :: _ ->
-    let all_chars =
-      List.map
-        (fun (p,_) -> match p.pat_desc with
-        | Tpat_constant (Const_char c) -> c
-        | _ -> assert false)
-        env in
-
-    let rec find_other i imax =
-      if i > imax then raise Not_found
-      else
-        let ci = Char.chr i in
-        if List.mem ci all_chars then
-          find_other (i+1) imax
-        else
-          make_pat (Tpat_constant (Const_char ci)) p.pat_type p.pat_env in
-    let rec try_chars = function
-      | [] -> omega
-      | (c1,c2) :: rest ->
-          try
-            find_other (Char.code c1) (Char.code c2)
-          with
-          | Not_found -> try_chars rest in
-
-    try_chars
-      [ 'a', 'z' ; 'A', 'Z' ; '0', '9' ;
-        ' ', '~' ; Char.chr 0 , Char.chr 255]
-
-| ({pat_desc=(Tpat_constant (Const_int _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_int i) -> i | _ -> assert false)
-      (function i -> Tpat_constant(Const_int i))
-      0 succ p env
-| ({pat_desc=(Tpat_constant (Const_int32 _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_int32 i) -> i | _ -> assert false)
-      (function i -> Tpat_constant(Const_int32 i))
-      0l Int32.succ p env
-| ({pat_desc=(Tpat_constant (Const_int64 _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_int64 i) -> i | _ -> assert false)
-      (function i -> Tpat_constant(Const_int64 i))
-      0L Int64.succ p env
-| ({pat_desc=(Tpat_constant (Const_nativeint _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_nativeint i) -> i | _ -> assert false)
-      (function i -> Tpat_constant(Const_nativeint i))
-      0n Nativeint.succ p env
-| ({pat_desc=(Tpat_constant (Const_string _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_string (s, _)) -> String.length s
-              | _ -> assert false)
-      (function i -> Tpat_constant(Const_string(String.make i '*', None)))
-      0 succ p env
-| ({pat_desc=(Tpat_constant (Const_float _))} as p,_) :: _ ->
-    build_other_constant
-      (function Tpat_constant(Const_float (f, _)) -> f
-              | _ -> assert false)
-      (function f -> Tpat_constant(Const_float (f, None)))
-      0.0 (fun f -> f +. 1.0) p env
-
+| ({pat_desc= Tpat_constant cst | Tpat_interval (cst, _)} as p,_) :: _ ->
+    build_other_constant cst p (env_extract_intervals env)
 | ({pat_desc = Tpat_array args} as p,_)::_ ->
     let all_lengths =
       List.map

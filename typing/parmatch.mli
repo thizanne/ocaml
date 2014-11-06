@@ -29,6 +29,8 @@ val all_record_args :
     (Longident.t loc * label_description * pattern) list ->
     (Longident.t loc * label_description * pattern) list
 val const_compare : constant -> constant -> int
+val const_interv_compare : constant * constant -> constant * constant -> int
+val next_constant : constant -> constant option
 
 val le_pat : pattern -> pattern -> bool
 val le_pats : pattern list -> pattern list -> bool

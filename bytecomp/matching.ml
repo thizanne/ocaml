@@ -1858,34 +1858,6 @@ let handle_shared_actions sw store =
   !hs,sw
 
 
-let next_float f = (* TODO: is this correct? *)
-  if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
-  else Int64.float_of_bits (Int64.pred (Int64.bits_of_float f))
-
-let next_string s =
-  let r = Bytes.create (String.length s + 1) in
-  Bytes.blit_string s 0 r 0 (String.length s);
-  Bytes.set r (String.length s) '\000';
-  Bytes.unsafe_to_string r
-
-let next_constant = function
-  | Const_int i -> if i = max_int then None
-    else Some (Const_int (succ i))
-  | Const_char c -> if Char.code c = 255 then None
-    else Some (Const_char (Char.chr ((Char.code c) + 1)))
-  | Const_int32 i -> if i = Int32.max_int then None
-    else Some (Const_int32 (Int32.succ i))
-  | Const_int64 i -> if i = Int64.max_int then None
-    else Some (Const_int64 (Int64.succ i))
-  | Const_nativeint i -> if i = Nativeint.max_int then None
-    else Some (Const_nativeint (Nativeint.succ i))
-  | Const_float (f, _) -> if f = infinity then None
-    else if f = max_float then Some (Const_float (infinity, None))
-    else if f = neg_infinity then Some (Const_float (min_float, None))
-    else if Pervasives.compare f nan = 0 then Some (Const_float (neg_infinity, None))
-    else Some (Const_float (next_float f, None))
-  | Const_string (s, o) -> Some (Const_string (next_string s, o))
-
 (* Note: dichotomic search requires sorted input with no duplicates *)
 let rec uniq_lambda_list sw = match sw with
   | []|[_] -> sw
@@ -1898,10 +1870,7 @@ let rec uniq_lambda_list sw = match sw with
       else p1::uniq_lambda_list sw1
 
 let sort_lambda_list l =
-  let l =
-    List.stable_sort (fun ((xl,xh),_) ((yl,yh),_) ->
-      let cmp = const_compare xl yl in
-      if cmp = 0 then const_compare xh yh else cmp) l in
+  let l = List.stable_sort (fun (i,_) (j,_) -> const_interv_compare i j) l in
   uniq_lambda_list l
 
 let has_non_constant_intervals l =
