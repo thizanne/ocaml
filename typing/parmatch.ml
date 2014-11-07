@@ -149,6 +149,11 @@ let const_min x y = if const_compare x y <= 0 then x else y
 
 let const_max x y = if const_compare x y >= 0 then x else y
 
+let extract_float = function
+| Const_float (f, _) -> f
+| _ -> assert false
+
+let interv_map f l = List.map (fun (x,y) -> f x, f y) l
 
 (***********************)
 (* Compatibility check *)
@@ -920,6 +925,15 @@ let build_other_constant cst p interv =
   | (_,h)::rem when const_compare h value < 0 -> find_value value rem
   | (l,h)::_ -> Some (l, h) (* the interval contains the value *)
   in
+  let fallback l h =
+      (* find the first positive value not in the pattern,
+         otherwise the first (from zero) negative value not in the pattern *)
+    match next_constant h with
+    | Some v -> v
+    | None -> match prev_constant l with
+      | None -> assert false (* we know the pattern is not exhaustive *)
+      | Some v -> v
+  in
   match interv with
   | [l, h] when prev_constant l = None && next_constant h = None -> omega
   | _ ->
@@ -928,6 +942,8 @@ let build_other_constant cst p interv =
     let zero = const_zero cst in
     let other = match find_value zero interv, cst with
     | None, _ -> zero
+    (* the fallback function works for any type but we may want friendlier
+       values to display *)
     | Some _, Const_char _ ->
       let rec try_chars = function
       | [] -> assert false
@@ -969,15 +985,67 @@ let build_other_constant cst p interv =
         try_string (String.make 1 cl)
       in
       try_chars ['*', '*'; 'a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
-    (* | Some _, Const_float _ -> failwith "TODO: find friendly values" *)
+    | Some (l, h), Const_float _ ->
+      let rec split_zero neg = function
+      | [] -> neg, []
+      | ((l,h)::_) as pos when compare l 0. > 0 -> neg, pos
+      | (l,h)::rem when compare h 0. < 0 -> split_zero ((-.h,-.l)::neg) rem
+      | (l,h)::pos -> (0.,-.l)::neg, (0., h)::pos
+      in
+      (* first try to find a small integer not in the pattern *)
+      let rec try_small_int l =
+        let build v = ceil (v *. (1.0 +. epsilon_float) +. epsilon_float) in
+        match l with
+        | [] -> None
+        | (_, h)::_ when h > 1e12 -> None
+        | [_, h] -> Some (build h)
+        | (_, h)::(((l, _)::_) as rem) ->
+          let v = build h in
+          if v < l then Some v
+          else try_small_int rem
+      in
+      (* otherwise, find a big hole and take the value in the middle *)
+      let rec try_big_hole eps l =
+        let check l h f =
+          if f > l && f < h then Some f
+          else None
+        in
+        let rec try_eps = function
+        | [] -> None
+        | [_, h] when h > max_float *. eps -> None
+        | [_, h] -> check h infinity (h +. 0.5 *. (max_float -. h))
+        | (_, h)::(((l, _)::_) as rem) ->
+          if (l -. h) /. h > eps then
+            match check h l (h +. 0.5 *. (l -. h)) with
+            | Some v -> Some v
+            | None -> try_eps rem
+          else
+            try_eps rem
+        in
+        if eps < epsilon_float then None
+        else
+          match try_eps l with
+          | Some v -> Some v
+          | None -> try_big_hole (eps *. eps) l
+      in
+      let neg, pos = split_zero [] (interv_map extract_float interv) in
+      let other_float = match try_small_int pos with
+          | Some v -> Some v
+          | None -> match try_small_int neg with
+              | Some v -> Some (-.v)
+              | None -> match try_big_hole 1e-6 pos with
+                | Some v -> Some v
+                | None -> match try_big_hole 1e-6 neg with
+                  | Some v -> Some (-.v)
+                  | None -> None
+      in
+      begin match other_float with
+      | Some v -> Const_float (v, None)
+      | None -> fallback l h (* otherwise, fallback *)
+      end
     | Some (l,h), _ ->
-      (* find the first positive value not in the pattern,
-         otherwise the first (from zero) negative value not in the pattern *)
-      match next_constant h with
-      | Some v -> v
-      | None -> match prev_constant l with
-        | None -> assert false (* we know the pattern is not exhaustive *)
-        | Some v -> v
+      (* for integer types, the fallback function is perfect *)
+      fallback l h
     in
     make_pat (Tpat_constant other) p.pat_type p.pat_env
 
