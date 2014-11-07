@@ -127,24 +127,6 @@ let const_zero = function
 | Const_float _ -> Const_float (0., None)
 | Const_string _ -> Const_string ("", None)
 
-let const_least_element = function
-| Const_int _ -> Const_int min_int
-| Const_int32 _ -> Const_int32 Int32.min_int
-| Const_int64 _ -> Const_int64 Int64.min_int
-| Const_nativeint _ -> Const_nativeint Nativeint.min_int
-| Const_char _ -> Const_char '\000'
-| Const_float _ -> Const_float (nan, None)
-| Const_string _ -> Const_string ("", None)
-
-let const_greatest_element = function
-| Const_int _ -> Const_int max_int
-| Const_int32 _ -> Const_int32 Int32.max_int
-| Const_int64 _ -> Const_int64 Int64.max_int
-| Const_nativeint _ -> Const_nativeint Nativeint.max_int
-| Const_char _ -> Const_char '\255'
-| Const_float _ -> Const_float (infinity, None)
-| Const_string _ -> raise Not_found
-
 let const_min x y = if const_compare x y <= 0 then x else y
 
 let const_max x y = if const_compare x y >= 0 then x else y
@@ -800,7 +782,7 @@ let full_match ignore_generalized closing env =  match env with
   in
   (match interv with
   | [] -> assert false
-  | (l,_)::_ when const_compare l (const_least_element cst) <> 0 -> false
+  | (l,_)::_ when prev_constant l <> None -> false
   | (_,h)::rem -> check_from h rem)
 | ({pat_desc = Tpat_tuple(_)},_) :: _ -> true
 | ({pat_desc = Tpat_record(_)},_) :: _ -> true
