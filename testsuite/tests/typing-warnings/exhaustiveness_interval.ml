@@ -8,10 +8,18 @@ let f (x : int) = match x with
   | 0 .. 10 -> 1
   | 11 .. 20 -> 2;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
-        ^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-12:
+3 |   | 11 .. 20 -> 2;;
+        ^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Redundant constant inside interval *)
@@ -20,10 +28,13 @@ let g x = match x with
   | 5 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
-        ^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Redundant sub-interval *)
@@ -32,10 +43,23 @@ let h x = match x with
   | 3 .. 7 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-10:
+3 |   | 3 .. 7 -> 2
+        ^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-5:
+4 |   | _ -> 3;;
         ^
-Error: Only character intervals are supported in patterns.
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Exhaustive char interval *)
@@ -53,7 +77,7 @@ let j x = match x with
 Line 2, characters 4-7:
 2 |   | 1.0 .. 2.0 -> 1
         ^^^
-Error: Only character intervals are supported in patterns.
+Error: Only character and integer intervals are supported in patterns.
 |}]
 
 (* String interval rejected *)
@@ -64,7 +88,7 @@ let k x = match x with
 Line 2, characters 4-7:
 2 |   | "a" .. "z" -> 1
         ^^^
-Error: Only character intervals are supported in patterns.
+Error: Only character and integer intervals are supported in patterns.
 |}]
 
 (* GADT with interval counter-example *)
@@ -76,10 +100,13 @@ let l (type a) (t : a ty) (x : a) = match t, x with
   | Bool, false -> 3;;
 [%%expect {|
 type _ ty = Int : int ty | Bool : bool ty
-Line 4, characters 9-10:
+Line 4, characters 4-16:
 4 |   | Int, 0 .. 10 -> 1
-             ^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Int32 non-exhaustive *)
@@ -87,10 +114,18 @@ let m (x : int32) = match x with
   | 0l .. 100l -> 1
   | 101l .. 200l -> 2;;
 [%%expect {|
-Line 2, characters 4-6:
+Line 2, characters 4-14:
 2 |   | 0l .. 100l -> 1
-        ^^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-16:
+3 |   | 101l .. 200l -> 2;;
+        ^^^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Int64 redundant sub-interval *)
@@ -99,10 +134,23 @@ let n (x : int64) = match x with
   | 50L .. 80L -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-6:
+Line 2, characters 4-14:
 2 |   | 0L .. 100L -> 1
-        ^^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-14:
+3 |   | 50L .. 80L -> 2
+        ^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-5:
+4 |   | _ -> 3;;
+        ^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Nativeint non-exhaustive *)
@@ -110,10 +158,18 @@ let o (x : nativeint) = match x with
   | 0n .. 50n -> 1
   | 51n .. 100n -> 2;;
 [%%expect {|
-Line 2, characters 4-6:
+Line 2, characters 4-13:
 2 |   | 0n .. 50n -> 1
-        ^^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-15:
+3 |   | 51n .. 100n -> 2;;
+        ^^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Nativeint exhaustive with wildcard *)
@@ -121,10 +177,18 @@ let p (x : nativeint) = match x with
   | 0n .. 100n -> 1
   | _ -> 2;;
 [%%expect {|
-Line 2, characters 4-6:
+Line 2, characters 4-14:
 2 |   | 0n .. 100n -> 1
-        ^^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-5:
+3 |   | _ -> 2;;
+        ^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Gap between intervals: counter-example is the gap value *)
@@ -132,10 +196,18 @@ let q x = match x with
   | 0 .. 5 -> 1
   | 7 .. 10 -> 2;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-10:
 2 |   | 0 .. 5 -> 1
-        ^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-11:
+3 |   | 7 .. 10 -> 2;;
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Char gap: counter-example shows the gap character *)
@@ -159,10 +231,23 @@ let s x = match x with
   | 5 .. 20 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-11:
+3 |   | 5 .. 20 -> 2
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-5:
+4 |   | _ -> 3;;
         ^
-Error: Only character intervals are supported in patterns.
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Wildcard before interval makes trailing interval redundant *)
@@ -171,10 +256,23 @@ let t x = match x with
   | _ -> 2
   | 11 .. 20 -> 3;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-5:
+3 |   | _ -> 2
         ^
-Error: Only character intervals are supported in patterns.
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-12:
+4 |   | 11 .. 20 -> 3;;
+        ^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Overlapping intervals: second is partially redundant but not unused *)
@@ -183,10 +281,23 @@ let u x = match x with
   | 5 .. 10 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-10:
 2 |   | 0 .. 5 -> 1
+        ^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-11:
+3 |   | 5 .. 10 -> 2
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-5:
+4 |   | _ -> 3;;
         ^
-Error: Only character intervals are supported in patterns.
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* Mismatched interval bound types *)
@@ -194,20 +305,22 @@ let v x = match x with
   | 0l .. 10 -> 1
   | _ -> 2;;
 [%%expect {|
-Line 2, characters 4-6:
+Line 2, characters 10-12:
 2 |   | 0l .. 10 -> 1
-        ^^
-Error: Only character intervals are supported in patterns.
+              ^^
+Error: This pattern matches values of type "int"
+       but a pattern was expected which matches values of type "int32"
 |}]
 
 let w x = match x with
   | 0 .. 10L -> 1
   | _ -> 2;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 9-12:
 2 |   | 0 .. 10L -> 1
-        ^
-Error: Only character intervals are supported in patterns.
+             ^^^
+Error: This pattern matches values of type "int64"
+       but a pattern was expected which matches values of type "int"
 |}]
 
 let y x = match x with
@@ -217,7 +330,8 @@ let y x = match x with
 Line 2, characters 11-13:
 2 |   | 'a' .. 10 -> 1
                ^^
-Error: Only character intervals are supported in patterns.
+Error: This pattern matches values of type "int"
+       but a pattern was expected which matches values of type "char"
 |}]
 
 (* Full-domain coverage: both int32 arms together cover the whole
@@ -227,10 +341,18 @@ let full_range32 (x : int32) = match x with
   | -2147483648l .. 0l -> 1
   | 1l .. 2147483647l -> 2;;
 [%%expect {|
-Line 2, characters 4-16:
+Line 2, characters 4-22:
 2 |   | -2147483648l .. 0l -> 1
-        ^^^^^^^^^^^^
-Error: Only character intervals are supported in patterns.
+        ^^^^^^^^^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-21:
+3 |   | 1l .. 2147483647l -> 2;;
+        ^^^^^^^^^^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
 
 (* An arm covered by the union of two earlier intervals is redundant;
@@ -241,8 +363,26 @@ let union_covered x = match x with
   | 5 .. 15 -> 3
   | _ -> 0;;
 [%%expect {|
-Line 2, characters 4-5:
+Line 2, characters 4-11:
 2 |   | 0 .. 10 -> 1
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 3, characters 4-12:
+3 |   | 11 .. 20 -> 2
+        ^^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 4, characters 4-11:
+4 |   | 5 .. 15 -> 3
+        ^^^^^^^
+Warning 11 [redundant-case]: this match case is unused.
+
+Line 5, characters 4-5:
+5 |   | _ -> 0;;
         ^
-Error: Only character intervals are supported in patterns.
+Warning 11 [redundant-case]: this match case is unused.
+>> Fatal error: Matching.do_compile_matching: Interval
+Uncaught exception: Misc.Fatal_error
+
 |}]
