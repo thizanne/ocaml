@@ -1011,16 +1011,6 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
       | None, None -> raise (Error (loc, !env, Invalid_interval))
       | Some c1, None ->
         let c2 = match c1 with
-        | Const_char _ -> Const_char '\000'
-        | Const_int _ -> Const_int min_int
-        | Const_int32 _ -> Const_int32 Int32.min_int
-        | Const_int64 _ -> Const_int64 Int64.min_int
-        | Const_nativeint _ -> Const_nativeint Nativeint.min_int
-        | Const_float _ -> Const_float (nan, None)
-        | Const_string _ -> Const_string ("", None)
-        in c1, c2
-      | None, Some c2 ->
-        let c1 = match c2 with
         | Const_char _ -> Const_char '\255'
         | Const_int _ -> Const_int max_int
         | Const_int32 _ -> Const_int32 Int32.max_int
@@ -1028,6 +1018,16 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         | Const_nativeint _ -> Const_nativeint Nativeint.max_int
         | Const_float _ -> Const_float (infinity, None)
         | Const_string _ -> raise (Error (loc, !env, Invalid_interval))
+        in c1, c2
+      | None, Some c2 ->
+        let c1 = match c2 with
+        | Const_char _ -> Const_char '\000'
+        | Const_int _ -> Const_int min_int
+        | Const_int32 _ -> Const_int32 Int32.min_int
+        | Const_int64 _ -> Const_int64 Int64.min_int
+        | Const_nativeint _ -> Const_nativeint Nativeint.min_int
+        | Const_float _ -> Const_float (nan, None)
+        | Const_string _ -> Const_string ("", None)
         in c1, c2
       in
       unify_pat_types loc !env (type_constant cst1) expected_ty;
