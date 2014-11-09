@@ -1041,48 +1041,22 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
           pat_attributes = sp.ppat_attributes;
           pat_env = !env }
       else
-        let from_list constr l =
+        let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
+        begin match cst1, cst2 with
+        (* still expand char intervals *)
+        | Const_char c1, Const_char c2 ->
           let open Ast_helper.Pat in
           let gloc = {loc with Location.loc_ghost=true} in
-          let rec loop = function
-          | [] -> assert false
-          | [x] -> constant ~loc:gloc (constr x)
-          | x::l ->
-            or_ ~loc:gloc
-              (constant ~loc:gloc (constr x))
-              (loop l)
+          let rec loop c =
+            if c = c2 then constant ~loc:gloc (Const_char c)
+            else
+              or_ ~loc:gloc
+                (constant ~loc:gloc (Const_char c))
+                (loop (Char.chr (Char.code c + 1)))
           in
-          let p = {(loop l) with ppat_loc=loc} in
+          let p = {(loop c1) with ppat_loc=loc} in
           type_pat p expected_ty
-        in
-        let make_expand first last succ constr =
-          let rec loop x =
-            if x = last then [x]
-            else x::loop (succ x)
-          in
-          from_list constr (loop first)
-        in
-        let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
-        (* when the range is small (<= 256), expand it *)
-        begin match cst1, cst2 with
-        | Const_char c1, Const_char c2 ->
-          make_expand c1 c2 (fun c -> Char.chr (Char.code c + 1)) (fun c -> Const_char c)
-        | Const_int i1, Const_int i2 when i2 - i1 < 256 ->
-          make_expand i1 i2 Pervasives.succ (fun i -> Const_int i)
-        | Const_int32 i1, Const_int32 i2 when Int32.compare (Int32.sub i2 i1) 256l < 0 ->
-          make_expand i1 i2 Int32.succ (fun i -> Const_int32 i)
-        | Const_int64 i1, Const_int64 i2 when Int64.compare (Int64.sub i2 i1) 256L < 0 ->
-          make_expand i1 i2 Int64.succ (fun i -> Const_int64 i)
-        | Const_nativeint i1, Const_nativeint i2 when Nativeint.compare (Nativeint.sub i2 i1) 256n < 0 ->
-          make_expand i1 i2 Nativeint.succ (fun i -> Const_nativeint i)
-        (* very special float ranges, involving only min/max_float, +/-inf, nan *)
-        | Const_float (f1, _), Const_float (f2, _) when Pervasives.compare f2 min_float <= 0 || Pervasives.compare max_float f1 <= 0 ->
-          from_list (fun f -> Const_float (f, None))
-            (List.filter (fun f -> Pervasives.compare f1 f <= 0 && Pervasives.compare f f2 <= 0)
-               [nan; neg_infinity; min_float; max_float; infinity])
-        (* string and other float ranges are never small *)
         | _ ->
-          (* fall back to a when clause *)
           rp {
             pat_desc = Tpat_interval (cst1, cst2);
             pat_loc = loc; pat_extra=[];
