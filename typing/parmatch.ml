@@ -82,7 +82,7 @@ let next_constant = function
     else Some (Const_nativeint (Nativeint.succ i))
   | Const_float (f, _) -> if f = infinity then None
     else if f = max_float then Some (Const_float (infinity, None))
-    else if f = neg_infinity then Some (Const_float (min_float, None))
+    else if f = neg_infinity then Some (Const_float (-.max_float, None))
     else if Pervasives.compare f nan = 0 then Some (Const_float (neg_infinity, None))
     else Some (Const_float (next_float f, None))
   | Const_string (s, o) -> Some (Const_string (next_string s, o))
@@ -100,7 +100,7 @@ let prev_constant = function
     else Some (Const_nativeint (Nativeint.pred i))
   | Const_float (f, _) -> if Pervasives.compare f nan = 0 then None
     else if f = neg_infinity then Some (Const_float (nan, None))
-    else if f = min_float then Some (Const_float (neg_infinity, None))
+    else if f = -.max_float then Some (Const_float (neg_infinity, None))
     else if f = infinity then Some (Const_float (max_float, None))
     else Some (Const_float (prev_float f, None))
   | Const_string ("", _) -> None
@@ -968,11 +968,15 @@ let build_other_constant cst p interv =
       in
       try_chars ['*', '*'; 'a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
     | Some (l, h), Const_float _ ->
+      (* do not take care of nan in this part, if it is the only missing float,
+      it will be found in fallback anyway *)
+      let minus x = if compare x nan = 0 then infinity else -.x in
       let rec split_zero neg = function
       | [] -> neg, []
       | ((l,h)::_) as pos when compare l 0. > 0 -> neg, pos
-      | (l,h)::rem when compare h 0. < 0 -> split_zero ((-.h,-.l)::neg) rem
-      | (l,h)::pos -> (0.,-.l)::neg, (0., h)::pos
+      | (_,h)::rem when compare h nan = 0 -> split_zero neg rem
+      | (l,h)::rem when compare h 0. < 0 -> split_zero ((-.h,minus l)::neg) rem
+      | (l,h)::pos -> (0.,minus l)::neg, (0., h)::pos
       in
       (* first try to find a small integer not in the pattern *)
       let rec try_small_int l =
