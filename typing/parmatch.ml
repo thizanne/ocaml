@@ -45,13 +45,17 @@ let zero = make_pat (Tpat_constant (Const_int 0)) Ctype.none Env.empty
 (* Constant utils *)
 (******************)
 
-(* TODO: is this correct? *)
+(* TODO: is this correct for all floats? (what about endianness?) *)
+(* for any regular float f (<> nan, +/-infinity), returns the smallest float
+   strictly greater than f *)
 let next_float f =
   if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
   else Int64.float_of_bits (Int64.pred (Int64.bits_of_float f))
 
 let prev_float f = -. (next_float (-. f))
 
+(* for any string s, returns the smallest string strictly greater than s
+   i.e. s with a char '\000' at the end *)
 let next_string s =
   let len = String.length s in
   let r = Bytes.create (len + 1) in
@@ -59,21 +63,14 @@ let next_string s =
   Bytes.set r len '\000';
   Bytes.unsafe_to_string r
 
-let prev_string s =
-  let len = String.length s in
-  let c = Char.code (s.[len - 1]) in
-  if c = 0 then
-    Bytes.sub_string (Bytes.unsafe_of_string s) 0 len
-  else
-    let r = Bytes.of_string s in
-    Bytes.set r (len - 1) (Char.chr (c + 1));
-    Bytes.unsafe_to_string r
-
+(* for any constant c, returns the smallest constant of the same type strictly
+   greater than c (boxed in Some), and None if c is the greatest element of its
+   type *)
 let next_constant = function
+  | Const_char c -> if c = '\255' then None
+    else Some (Const_char (Char.chr ((Char.code c) + 1)))
   | Const_int i -> if i = max_int then None
     else Some (Const_int (succ i))
-  | Const_char c -> if Char.code c = 255 then None
-    else Some (Const_char (Char.chr ((Char.code c) + 1)))
   | Const_int32 i -> if i = Int32.max_int then None
     else Some (Const_int32 (Int32.succ i))
   | Const_int64 i -> if i = Int64.max_int then None
@@ -87,11 +84,14 @@ let next_constant = function
     else Some (Const_float (next_float f, None))
   | Const_string (s, o) -> Some (Const_string (next_string s, o))
 
+(* for any constant c, returns the greatest constant of the same type strictly
+   smaller than c (boxed in Some), and None if c is the smallest element of its
+   type. Raise Not_found for non-empty strings *)
 let prev_constant = function
+  | Const_char c -> if c = '\000' then None
+    else Some (Const_char (Char.chr ((Char.code c) - 1)))
   | Const_int i -> if i = min_int then None
     else Some (Const_int (pred i))
-  | Const_char c -> if Char.code c = 0 then None
-    else Some (Const_char (Char.chr ((Char.code c) - 1)))
   | Const_int32 i -> if i = Int32.min_int then None
     else Some (Const_int32 (Int32.pred i))
   | Const_int64 i -> if i = Int64.min_int then None
@@ -104,7 +104,19 @@ let prev_constant = function
     else if f = infinity then Some (Const_float (max_float, None))
     else Some (Const_float (prev_float f, None))
   | Const_string ("", _) -> None
-  | Const_string (s, o) -> Some (Const_string (prev_string s, o))
+(* unless the string ends with a '\000' (in which case the result would be
+   that string without this trailing '\000'), there is no finite previous
+   string *)
+  | Const_string _ -> raise Not_found
+
+let is_least_constant = function
+  | Const_char c -> c = '\000'
+  | Const_int i -> i = min_int
+  | Const_int32 i -> i = Int32.min_int
+  | Const_int64 i -> i = Int64.min_int
+  | Const_nativeint i -> i = Nativeint.min_int
+  | Const_float (f, _) -> Pervasives.compare f nan = 0
+  | Const_string (s, _) -> s = ""
 
 let const_compare x y =
   match x,y with
@@ -118,6 +130,8 @@ let const_interv_compare (l1,h1) (l2,h2) =
   let cmp = const_compare l1 l2 in
   if cmp = 0 then const_compare h1 h2 else cmp
 
+(* first constant to look at when building a non-exhaustive pattern matching
+   counter-example *)
 let const_zero = function
 | Const_int _ -> Const_int 0
 | Const_int32 _ -> Const_int32 0l
@@ -782,7 +796,7 @@ let full_match ignore_generalized closing env =  match env with
   in
   (match interv with
   | [] -> assert false
-  | (l,_)::_ when prev_constant l <> None -> false
+  | (l,_)::_ when not (is_least_constant l) -> false
   | (_,h)::rem -> check_from h rem)
 | ({pat_desc = Tpat_tuple(_)},_) :: _ -> true
 | ({pat_desc = Tpat_record(_)},_) :: _ -> true
@@ -917,7 +931,7 @@ let build_other_constant cst p interv =
       | Some v -> v
   in
   match interv with
-  | [l, h] when prev_constant l = None && next_constant h = None -> omega
+  | [l, h] when is_least_constant l && next_constant h = None -> omega
   | _ ->
     (* from here, we know the pattern is not exhaustive *)
     (* let's first try zero *)
