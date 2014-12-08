@@ -654,8 +654,10 @@ let simplify_cases args cls = match args with
 
 let rec what_is_cases cases = match cases with
 | ({pat_desc=Tpat_any} :: _, _) :: rem -> what_is_cases rem
-| (({pat_desc=(Tpat_var _|Tpat_or (_,_,_)|Tpat_alias (_,_,_))}::_),_)::_
-  -> assert false (* applies to simplified matchings only *)
+| (({pat_desc=(Tpat_var _|Tpat_or (_,_,_)|Tpat_alias (_,_,_))}::_ as ps),_)::_
+  ->
+    pretty_line ps ;
+    assert false (* applies to simplified matchings only *)
 | (p::_,_)::_ -> p
 | [] -> omega
 | _ -> assert false
@@ -800,18 +802,21 @@ let get_group p = match p.pat_desc with
 
 
 
+(* interval patterns will go through the or-pattern machinery *)
 let is_or p = match p.pat_desc with
-| Tpat_or _ -> true
+| Tpat_or _
+| Tpat_interval _  -> true
 | _ -> false
 
 (* Conditions for appending to the Or matrix *)
+
 let conda p q = not (compat p q)
 and condb act ps qs =  not (is_guarded act) && Parmatch.le_pats qs ps
 
 let or_ok p ps l =
   List.for_all
     (function
-      | ({pat_desc=Tpat_or _} as q::qs,act) ->
+      | ({pat_desc=(Tpat_or _|Tpat_interval _)} as q::qs,act) ->
           conda p q || condb act ps qs
       | _ -> true)
     l
@@ -834,6 +839,14 @@ let insert_or_append p ps act ors no =
   let rec attempt seen = function
     | (q::qs,act_q) as cl::rem ->
         if is_or q then begin
+(*
+          let cpt = compat p q
+          and eqv = equiv_pat p q in
+          eprintf "** ATTEMPT:" ;
+          eprintf " P=" ; pretty_pat p ;
+          eprintf " Q=" ; pretty_pat q ;
+          eprintf "compat=%b, equiv=%b\n" cpt eqv ;
+*)
           if compat p q then
             if
               IdentSet.is_empty (extract_vars IdentSet.empty p) &&
@@ -901,19 +914,48 @@ let rebuild_nexts arg nexts k =
     first column is made of variables only are splitted further
     (cf. precompile_var).
 
+
+   do_or tells that we are splitting an or matrix,
+   in such a case, intervall patterns count as constant patterns.
+
+   by contrast, if do_or is false, interval patterns count   
+   as or-patterns.
 *)
 
 
-let rec split_or argo cls args def =
-
+let rec split_or do_or argo cls args def =
+(*
+  eprintf "** SPLIT OR:\n" ;
+  pretty_cases cls ;
+*)
   let cls = simplify_cases args cls in
 
   let rec do_split before ors no = function
     | [] ->
+(*
+        eprintf "** DO SPLIT OVER:\n" ;
+        eprintf "BEFORE:\n" ;
+        pretty_cases before ;
+        eprintf "ORS:\n" ;
+        pretty_cases ors ; 
+        eprintf "NO:\n" ;
+        pretty_cases no ;
+*)
         cons_next
           (List.rev before) (List.rev ors) (List.rev no)
     | ((p::ps,act) as cl)::rem ->
-        if up_ok cl no then
+(*
+        eprintf "** DO SPLIT:" ;
+        eprintf "ORS:\n" ;
+        pretty_cases ors ;
+        eprintf "NO:\n" ;
+        pretty_cases no ;
+        eprintf "PAT:\n" ;
+        pretty_pat p ;
+        eprintf " -> %b\n" (is_or p) ;
+*)
+        if do_or then do_split (cl::before) ors no rem
+        else if up_ok cl no then
           if is_or p then
             let ors, no = insert_or_append p ps act ors no in
             do_split before ors no rem
@@ -940,7 +982,6 @@ let rec split_or argo cls args def =
           argo yes yesor args
           (cons_default matrix idef def)
           ((idef,next)::nexts) in
-
   do_split [] [] [] cls
 
 (* Ultra-naive spliting, close to semantics, used for extension,
@@ -1006,6 +1047,10 @@ and split_naive cls args def k =
   | _ -> assert false
 
 and split_constr cls args def k =
+(*
+  eprintf "** SPLIT CONSTR **\n CLS=" ;
+  pretty_cases cls ;
+*)
   let ex_pat = what_is_cases cls in
   match ex_pat.pat_desc with
   | Tpat_any -> precompile_var args cls def k
@@ -1017,7 +1062,8 @@ and split_constr cls args def k =
 
       let rec split_ex yes no = function
         | [] ->
-            let yes = List.rev yes and no = List.rev no in
+            let yes = List.rev yes
+            and no = List.rev no in
             begin match no with
             | [] ->
                 {me = Pm {cases=yes ; args=args ; default=def} ;
@@ -1079,7 +1125,7 @@ and split_constr cls args def k =
           else split_noex [cl] [] rem
       | _ ->  assert false
 
-and precompile_var  args cls def k = match args with
+and precompile_var args cls def k = match args with
 | []  -> assert false
 | _::((Lvar v as av,_) as arg)::rargs ->
     begin match cls with
@@ -1094,7 +1140,7 @@ and precompile_var  args cls def k = match args with
             cls
         and var_def = make_default (fun _ rem -> rem) def in
         let {me=first ; matrix=matrix}, nexts =
-          split_or (Some v) var_cls (arg::rargs) var_def in
+          split_or false (Some v) var_cls (arg::rargs) var_def in
 
 (* Compute top information *)
         match nexts with
@@ -1126,7 +1172,7 @@ and precompile_or argo cls ors args def k = match ors with
 | [] -> split_constr cls args def k
 | _  ->
     let rec do_cases = function
-      | ({pat_desc=Tpat_or _} as orp::patl, action)::rem ->
+      | ({pat_desc=Tpat_or _|Tpat_interval _} as orp::patl, action)::rem ->
           let do_opt = not (is_exc orp) in
           let others,rem =
             if do_opt then get_equiv orp rem
@@ -1172,12 +1218,14 @@ and precompile_or argo cls ors args def k = match ors with
       top_default=def},
     k
 
-let split_precompile argo pm =
-  let {me=next}, nexts = split_or argo pm.cases pm.args pm.default  in
+(* do_or -> we are compiling the expansion of Or Matrix *)
+let split_precompile do_or argo pm =
+  let {me=next}, nexts = split_or do_or argo pm.cases pm.args pm.default in
   if dbg && (nexts <> [] || (match next with PmOr _ -> true | _ -> false))
   then begin
-    prerr_endline "** SPLIT **" ;
+    eprintf "** SPLIT [do_or=%b] **\n" do_or ;
     pretty_pm pm ;
+    prerr_endline "** INTO **" ;
     pretty_precompiled_res  next nexts
   end ;
   next, nexts
@@ -1285,8 +1333,31 @@ let make_constant_interval_matching p def ctx = function
 let eq_key_constant_interval (cst1l, cst1h) (cst2l, cst2h) =
   const_compare cst1l cst2l = 0 && const_compare cst1h cst2h = 0
 
+let make_disjoint cls =
+
+  let inters = Parmatch.inters_pss (List.map fst cls) in
+
+  let split_clause cl k = match cl with
+  | ({pat_desc=Tpat_constant _}::_),_ -> cl::k
+  | ({pat_desc=Tpat_interval (c1,c2)} as p::ps),act ->
+      List.fold_right
+        (fun p k -> (p::ps,act)::k)
+        (Parmatch.split_interval p c1 c2 inters)
+        k
+  | _ -> assert false in
+
+  List.fold_right split_clause cls []
 
 let divide_constant_interval ctx m =
+  let ocases = m.cases in
+  let cases = make_disjoint ocases in
+  m.cases <- cases ;
+  if dbg then begin
+    eprintf "** DIVIDE const\n" ;
+    pretty_cases ocases ;
+    eprintf "==>>\n" ;
+    pretty_cases m.cases
+  end ;
   divide
     make_constant_interval_matching
     eq_key_constant_interval (get_key_constant_interval "divide")
@@ -2826,11 +2897,11 @@ let arg_to_var arg cls = match arg with
       partial=exhaustiveness information from Parmatch
       ctx=a context
       m=a pattern matching
-
+      do_or=compiling a Or matrix
    Output: a lambda term, a jump summary {..., exit number -> context, .. }
 *)
 
-let rec compile_match repr partial ctx m = match m with
+let rec compile_match_gen do_or repr partial ctx m = match m with
 | { cases = [] } -> comp_exit ctx m
 | { cases = ([], action) :: rem } ->
     if is_guarded action then begin
@@ -2842,7 +2913,7 @@ let rec compile_match repr partial ctx m = match m with
 | { args = (arg, str)::argl } ->
     let v,newarg = arg_to_var arg m.cases in
     let first_match,rem =
-      split_precompile (Some v)
+      split_precompile do_or (Some v)
         { m with args = (newarg, Alias) :: argl } in
     let (lam, total) =
       comp_match_handlers
@@ -2851,7 +2922,8 @@ let rec compile_match repr partial ctx m = match m with
     bind_check str v arg lam, total
 | _ -> assert false
 
-
+and compile_match  repr partial ctx m =
+  compile_match_gen false repr partial ctx m
 (* verbose version of do_compile_matching, for debug *)
 
 and do_compile_matching_pr repr partial ctx arg x =
@@ -2913,7 +2985,7 @@ and do_compile_matching repr partial ctx arg pmh = match pmh with
       do_compile_matching repr partial (ctx_lshift ctx) arg pmh in
     lam, jumps_map ctx_rshift total
 | PmOr {body=body ; handlers=handlers} ->
-    let lam, total = compile_match repr partial ctx body in
+    let lam, total = compile_match_gen true repr partial ctx body in
     compile_orhandlers (compile_match repr partial) lam total ctx handlers
 
 and compile_no_test divide up_ctx repr partial ctx to_match =
@@ -3165,12 +3237,12 @@ let do_for_multiple_match loc paraml pat_act_list partial =
         -1,
         { cases = List.map (fun (pat, act) -> ([pat], act)) pat_act_list;
           args = [Lprim(Pmakeblock(0, Immutable), paraml), Strict] ;
-          default = [] } in
+         default = [] } in
 
   try
     try
 (* Once for checking that compilation is possible *)
-      let next, nexts = split_precompile None pm1 in
+      let next, nexts = split_precompile false None pm1 in
 
       let size = List.length paraml
       and idl = List.map (fun _ -> Ident.create "match") paraml in

@@ -1044,7 +1044,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
         begin match cst1, cst2 with
         (* still expand char intervals *)
-        | Const_char c1, Const_char c2 ->
+        | Const_char c1, Const_char c2  ->
           let open Ast_helper.Pat in
           let gloc = {loc with Location.loc_ghost=true} in
           let rec loop c =

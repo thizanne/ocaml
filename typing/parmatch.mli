@@ -25,12 +25,23 @@ val omega : pattern
 val omegas : int -> pattern list
 val omega_list : 'a list -> pattern list
 val normalize_pat : pattern -> pattern
+
+(*  Extract intervals from first column *)
+val inters_pss : pattern list list -> (constant * constant) list
+
+(* Split interval p c1 c2 inters 
+   returns disjoint interval patterns according to division 'inter' *)
+val split_interval :
+   pattern -> constant -> constant ->  (constant * constant) list ->
+   pattern list
+
 val all_record_args :
     (Longident.t loc * label_description * pattern) list ->
     (Longident.t loc * label_description * pattern) list
 val const_compare : constant -> constant -> int
 val const_interv_compare : constant * constant -> constant * constant -> int
 val next_constant : constant -> constant option
+val prev_constant : constant -> constant option
 
 val le_pat : pattern -> pattern -> bool
 val le_pats : pattern list -> pattern list -> bool

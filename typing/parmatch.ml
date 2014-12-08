@@ -41,9 +41,32 @@ let omega_list l = List.map (fun _ -> omega) l
 
 let zero = make_pat (Tpat_constant (Const_int 0)) Ctype.none Env.empty
 
+let rec orify_many =
+  let orify x y =
+    make_pat (Tpat_or (x, y, None)) x.pat_type x.pat_env
+  in
+  function
+    | [] -> assert false
+    | [x] -> x
+    | x :: xs -> orify x (orify_many xs)
+
 (******************)
 (* Constant utils *)
 (******************)
+
+let const_compare x y =
+  match x,y with
+  | Const_float (f1, _), Const_float (f2, _) ->
+      Pervasives.compare f1 f2
+  | Const_string (s1, _), Const_string (s2, _) ->
+      String.compare s1 s2
+  | _, _ -> Pervasives.compare x y
+
+let const_interv_compare (l1,h1) (l2,h2) = match const_compare l1 l2 with
+| 0 -> const_compare h1 h2
+| r -> r
+
+
 
 (* TODO: is this correct for all floats? (what about endianness?) *)
 (* for any regular float f (<> nan, +/-infinity), returns the smallest float
@@ -118,17 +141,6 @@ let is_least_constant = function
   | Const_float (f, _) -> Pervasives.compare f nan = 0
   | Const_string (s, _) -> s = ""
 
-let const_compare x y =
-  match x,y with
-  | Const_float (f1, _), Const_float (f2, _) ->
-      Pervasives.compare f1 f2
-  | Const_string (s1, _), Const_string (s2, _) ->
-      String.compare s1 s2
-  | _, _ -> Pervasives.compare x y
-
-let const_interv_compare (l1,h1) (l2,h2) =
-  let cmp = const_compare l1 l2 in
-  if cmp = 0 then const_compare h1 h2 else cmp
 
 (* first constant to look at when building a non-exhaustive pattern matching
    counter-example *)
@@ -178,6 +190,17 @@ let records_args l1 l2 =
         combine (p1::r1) (p2::r2) rem1 rem2 in
   combine [] [] l1 l2
 
+(* Constant d in interval [c1 .. c2] *)
+let inside c1 c2 d = const_compare c1 d <= 0 && const_compare d c2 <= 0
+
+(* Interval intersection is non-empty *)
+let intersects c1 c2 c3 c4 =
+  if const_compare c3 c1 <= 0 then const_compare c1 c4 <= 0
+  else const_compare c3 c2 <= 0
+
+let compat_inter c1 c2 c3 c4 =
+  if const_compare c3 c1 <= 0 then const_compare c1 c4 <= 0
+  else const_compare c3 c2 <= 0
 
 let rec compat p q =
   match p.pat_desc,q.pat_desc with
@@ -189,11 +212,9 @@ let rec compat p q =
   | _,Tpat_or (q1,q2,_)     -> compat p q1 || compat p q2
   | Tpat_constant c1, Tpat_constant c2 -> const_compare c1 c2 = 0
   | Tpat_interval (c1, c2), Tpat_constant c3
-  | Tpat_constant c3, Tpat_interval (c1, c2) ->
-      const_compare c1 c3 <= 0 && const_compare c2 c3 >= 0
+  | Tpat_constant c3, Tpat_interval (c1, c2) -> inside c1 c2 c3
   | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
-      if const_compare c1 c3 >= 0 then const_compare c1 c4 <= 0
-      else const_compare c3 c2 <= 0
+      compat_inter c1 c2 c3 c4
   | Tpat_tuple ps, Tpat_tuple qs -> compats ps qs
   | Tpat_lazy p, Tpat_lazy q -> compat p q
   | Tpat_construct (_, c1,ps1), Tpat_construct (_, c2,ps2) ->
@@ -376,7 +397,7 @@ let pretty_matrix (pss : matrix) =
 (* Utilities for matching   *)
 (****************************)
 
-(* Check top matching *)
+(* Check top matching, interval are assumed to be splitted *)
 let simple_match p1 p2 =
   match p1.pat_desc, p2.pat_desc with
   | Tpat_construct(_, c1, _), Tpat_construct(_, c2, _) ->
@@ -384,12 +405,23 @@ let simple_match p1 p2 =
   | Tpat_variant(l1, _, _), Tpat_variant(l2, _, _) ->
       l1 = l2
   | Tpat_constant(c1), Tpat_constant(c2) -> const_compare c1 c2 = 0
+(* LUC *)
+(*
   | Tpat_interval (c1, c2), Tpat_constant c ->
       const_compare c1 c = 0 && const_compare c2 c = 0
   | Tpat_constant c, Tpat_interval (d1, d2) ->
       const_compare c d1 >= 0 && const_compare c d2 <= 0
   | Tpat_interval (c1, c2), Tpat_interval (d1, d2) ->
       const_compare c1 d1 >= 0 && const_compare c2 d2 <= 0
+*)
+  | (Tpat_interval (c1, c2), Tpat_constant c)
+  | (Tpat_constant c, Tpat_interval (c1, c2)) ->
+      assert (not (inside c1 c2 c)) ; false
+  | Tpat_interval (c1, c2), Tpat_interval (d1, d2) ->
+      if intersects c1 c2 d1 d2 then begin
+        assert (const_compare c1 d1 = 0 && const_compare c2 d2 = 0) ;
+        true
+      end else false
   | Tpat_tuple _, Tpat_tuple _ -> true
   | Tpat_lazy _, Tpat_lazy _ -> true
   | Tpat_record _ , Tpat_record _ -> true
@@ -482,6 +514,7 @@ let rec normalize_pat q = match q.pat_desc with
   | Tpat_lazy _ ->
       make_pat (Tpat_lazy omega) q.pat_type q.pat_env
   | Tpat_or _ -> fatal_error "Parmatch.normalize_pat"
+
 
 (*
   Build normalized (cf. supra) discriminating pattern,
@@ -1134,6 +1167,139 @@ let build_other_gadt ext env =
         pats
     | _ -> assert false
 
+(*********************)
+(* Interval handling *)
+(*********************)
+
+(* Extract intervals as a list of sorted disjoint sub-intervals *)
+
+exception NoConst
+
+(* Insert some interval into a sorted list of disjoint intervals *)
+
+let mk_inter c1 c2 k =
+  let cmp = const_compare c1 c2 in
+  if cmp <= 0 then (c1,c2)::k
+  else k
+
+let mk_inter_right c1 c2 k = match prev_constant c2 with
+| Some c2 -> mk_inter c1 c2 k
+| None -> k
+
+let mk_inter_left c1 c2 k = match next_constant c1 with
+| Some c1 -> mk_inter c1 c2 k
+| None -> k
+
+let rec insert d1 d2 = function
+  | [] -> [(d1,d2)]
+  | (c1,c2 as p)::css ->
+    if inside c1 c2 d1 then
+        if inside c1 c2 d2 then
+          mk_inter_right c1 d1
+            ((d1,d2)::mk_inter_left d2 c2 css)
+        else
+          mk_inter_right c1 d1
+            (mk_inter d1 c2
+               (insert_left c2 d2 css))
+      else if inside c1 c2 d2 then
+        mk_inter_right d1 c1
+          (mk_inter c1 d2
+             (mk_inter_left d2 c2 css))
+      else if inside d1 d2 c1 then
+        if inside d1 d2 c2 then
+          mk_inter_right d1 c1
+            (p::insert_left c2 d2 css)
+        else
+          mk_inter_right d1 c1
+            (mk_inter c1 d2 (mk_inter_left d2 c2 css))
+      else
+        if const_compare c2 d1 < 0 then p::insert d1 d2 css
+        else begin
+          assert (const_compare d2 c1 < 0) ;
+          (d1,d2)::p::css
+        end
+
+
+and insert_left c1 c2 css = match next_constant c1 with
+| Some c1 -> insert c1 c2 css
+| None -> css
+
+let rec inter_pat k p = match p.pat_desc with
+| Tpat_constant c -> insert c c k
+| Tpat_interval (c1,c2) -> insert c1 c2 k
+| Tpat_var _|Tpat_any -> k
+| Tpat_alias (p,_,_) -> inter_pat k p
+| Tpat_or (p1,p2,_) -> inter_pat (inter_pat k p1) p2
+| Tpat_tuple _|Tpat_construct (_, _, _)|Tpat_variant (_, _, _)
+| Tpat_record (_, _)|Tpat_array _|Tpat_lazy _
+  -> raise NoConst
+
+let inter_ps k ps = match ps with
+| p::_ -> inter_pat k p
+| [] -> assert false
+
+(* Exported, cannot raise NoConst *)
+let inters_pss pss =
+  try List.fold_left inter_ps [] pss
+  with NoConst -> assert false
+
+
+(* split pattern according to disjoint intervals *)
+let mk_inter_pat p c1 c2 =
+  let desc =
+    if const_compare c1 c2 = 0 then Tpat_constant c1
+    else Tpat_interval (c1,c2) in
+  { p with pat_loc = Location.none; pat_desc = desc;}
+
+let rec do_split k p d1 d2 css = match css with
+| [] -> k
+| (c1,c2)::css ->
+    if inside d1 d2 c1 then
+      do_split (mk_inter_pat p c1 c2::k) p d1 d2 css
+    else if const_compare c2 d1 < 0 then
+      do_split k p d1 d2 css
+    else k
+
+(* Exported *)
+let split_interval p c1 c2 css = match p.pat_desc with
+| Tpat_interval (d1,d2) ->
+    begin match do_split [] p d1 d2 css with
+    | [_] -> [p] (* Not splitted *)
+    | r -> r
+    end
+| _ -> [p]
+
+(* intervals for pss X qs pairs *)
+
+let rec split_pat css p = match p.pat_desc with
+| Tpat_alias (q,x,y) ->
+    let q = split_pat css q in
+    { p with pat_desc = Tpat_alias (q,x,y) }
+| Tpat_or (p1,p2,x) ->
+    let p1 = split_pat css p1
+    and p2 = split_pat css p2 in
+    { p with pat_desc = Tpat_or (p1,p2,x); }
+| Tpat_constant _|Tpat_any|Tpat_var _ -> p
+| Tpat_interval (c1,c2) ->
+    let ps = split_interval p c1 c2 css in
+    orify_many ps
+| Tpat_tuple _|Tpat_construct (_, _, _)|Tpat_variant (_, _, _)
+| Tpat_record (_, _)|Tpat_array _|Tpat_lazy _
+    -> assert false
+
+let split_ps css ps = match ps with
+| p::ps -> split_pat css p::ps
+| [] -> assert false
+
+let split_pss_qs pss qs =
+  try
+    let css = List.fold_left inter_ps (inter_ps [] qs) pss in
+    List.map (split_ps css) pss,split_ps css qs
+  with NoConst ->
+    pss,qs
+
+(* Internal interval collection and splitting *)
+
 (*
   Core function :
   Is the last row of pattern matrix pss + qs satisfiable ?
@@ -1160,15 +1326,21 @@ and has_instances = function
   | [] -> true
   | q::rem -> has_instance q && has_instances rem
 
-let rec satisfiable pss qs = match pss with
+(* argument inters <=> intervals not yet splitted *)
+let rec do_satisfiable inters pss qs = match pss with
 | [] -> has_instances qs
 | _  ->
     match qs with
     | [] -> false
     | {pat_desc = Tpat_or(q1,q2,_)}::qs ->
-        satisfiable pss (q1::qs) || satisfiable pss (q2::qs)
+        do_satisfiable inters pss (q1::qs) ||
+        do_satisfiable inters pss (q2::qs)
     | {pat_desc = Tpat_alias(q,_,_)}::qs ->
-          satisfiable pss (q::qs)
+          do_satisfiable inters pss (q::qs)
+    | {pat_desc = (Tpat_any | Tpat_var _|Tpat_constant _|Tpat_interval _)}::_
+      when inters ->
+        let pss,qs = split_pss_qs pss qs in
+        do_satisfiable false pss qs
     | {pat_desc = (Tpat_any | Tpat_var(_))}::qs ->
         let q0 = discr_pat omega pss in
         begin match filter_all q0 pss with
@@ -1189,6 +1361,7 @@ let rec satisfiable pss qs = match pss with
         let q0 = discr_pat q pss in
         satisfiable (filter_one q0 pss) (simple_match_args q0 q @ qs)
 
+and satisfiable pss qs = do_satisfiable true pss qs
 (*
   Now another satisfiable function that additionally
   supplies an example of a matching value.
@@ -1200,14 +1373,6 @@ type 'a result =
   | Rnone           (* No matching value *)
   | Rsome of 'a     (* This matching value *)
 
-let rec orify_many =
-  let orify x y =
-    make_pat (Tpat_or (x, y, None)) x.pat_type x.pat_env
-  in
-  function
-    | [] -> assert false
-    | [x] -> x
-    | x :: xs -> orify x (orify_many xs)
 
 let rec try_many  f = function
   | [] -> Rnone
@@ -1227,10 +1392,18 @@ let rec try_many_gadt  f = function
   | (p,pss)::rest ->
       rappend (f (p, pss)) (try_many_gadt f rest)
 
+let split_pss pss =
+  try
+    let css = List.fold_left inter_ps [] pss in
+    List.map (split_ps css) pss
+  with NoConst ->
+    pss
+ 
 let rec exhaust ext pss n = match pss with
 | []    ->  Rsome (omegas n)
 | []::_ ->  Rnone
 | pss   ->
+    let pss = split_pss pss in
     let q0 = discr_pat omega pss in
     begin match filter_all q0 pss with
           (* first column of pss is made of variables only *)
@@ -1317,6 +1490,7 @@ let rec exhaust_gadt (ext:Path.t option) pss n = match pss with
 | []    ->  Rsome [omegas n]
 | []::_ ->  Rnone
 | pss   ->
+    let pss = split_pss pss in
     let q0 = discr_pat omega pss in
     begin match filter_all q0 pss with
           (* first column of pss is made of variables only *)
@@ -1402,6 +1576,7 @@ let rec pressure_variants tdefs = function
   | []    -> false
   | []::_ -> true
   | pss   ->
+      let pss = split_pss pss in
       let q0 = discr_pat omega pss in
       begin match filter_all q0 pss with
         [] -> pressure_variants tdefs (filter_extra pss)
@@ -1634,6 +1809,9 @@ let rec every_satisfiables pss qs = match qs.active with
         else
 (* this is a real or-pattern *)
           every_satisfiables (push_or_column pss) (push_or qs)
+    | Tpat_interval _ ->
+        (* Expand intervals later, in satisfiable *)
+        every_satisfiables (push_no_or_column pss) (push_no_or qs)
     | Tpat_variant (l,_,r) when is_absent l r -> (* Ah Jacques... *)
         Unused
     | _ ->
@@ -1690,7 +1868,7 @@ let rec le_pat p q =
   | Tpat_constant(c1), Tpat_interval(c2, c3) ->
       const_compare c1 c2 <= 0 && const_compare c3 c1 <= 0
   | Tpat_interval(c1, c2), Tpat_constant(c3) ->
-      const_compare c1 c3 <= 0 && const_compare c3 c2 <= 0
+      inside c1 c2 c3
   | Tpat_interval(c1, c2), Tpat_interval(c3, c4) ->
       const_compare c1 c3 <= 0 && const_compare c4 c2 <= 0
   | Tpat_construct(_,c1,ps), Tpat_construct(_,c2,qs) ->
@@ -1739,10 +1917,9 @@ let rec lub p q = match p.pat_desc,q.pat_desc with
 | Tpat_constant c1, Tpat_constant c2 when const_compare c1 c2 = 0 -> p
 | ( Tpat_constant c1, Tpat_interval (c2, c3)
   | Tpat_interval (c2, c3), Tpat_constant c1 )
-    when const_compare c1 c3 <= 0 && const_compare c3 c2 <= 0 -> q
+    when inside c1 c2 c3 -> q
 | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
-  if (if const_compare c1 c3 >= 0 then const_compare c1 c4 <= 0
-    else const_compare c3 c2 <= 0) then
+  if intersects c1 c2 c3 c4 then
     { p with pat_desc = Tpat_interval (const_max c1 c3, const_min c2 c4) }
   else raise Empty
 | Tpat_tuple ps, Tpat_tuple qs ->
