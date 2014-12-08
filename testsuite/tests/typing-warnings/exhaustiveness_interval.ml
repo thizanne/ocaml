@@ -193,10 +193,6 @@ let s x = match x with
   | 5 .. 20 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 3, characters 4-11:
-3 |   | 5 .. 20 -> 2
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 
@@ -223,10 +219,6 @@ let u x = match x with
   | 5 .. 10 -> 2
   | _ -> 3;;
 [%%expect {|
-Line 3, characters 4-11:
-3 |   | 5 .. 10 -> 2
-        ^^^^^^^
-Warning 11 [redundant-case]: this match case is unused.
 >> Fatal error: Matching.do_compile_matching: Interval
 Uncaught exception: Misc.Fatal_error
 

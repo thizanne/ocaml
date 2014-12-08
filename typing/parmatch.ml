@@ -1318,6 +1318,213 @@ and has_instances = function
   | [] -> true
   | q::rem -> has_instance q && has_instances rem
 
+(* Interval splitting: make intervals disjoint before analysis.
+
+   When the first column contains overlapping intervals, we split them
+   into disjoint sub-intervals so that simple_match can work correctly.
+   The splitting is only needed for columns containing constants/intervals
+   (not for strings or floats).
+
+   Legend and function map ([css] is the pivotal data structure):
+   - [css : (constant * constant) list] is a set of Column
+     Sub-intervalS: closed intervals [(lo, hi)], sorted by lower bound,
+     pairwise disjoint and non-touching. It is the disjoint
+     decomposition of all the bounds appearing in a column.
+   - [insert d1 d2 css] adds the interval [d1, d2] to [css], cutting
+     it (and the existing entries) at intersection boundaries so the
+     invariant is preserved.
+   - [inter_pat k p] folds the constant/interval bounds of pattern [p]
+     (looking through aliases and or-patterns) into the decomposition
+     [k]; [inters_pss pss] does so for the whole first column of the
+     matrix [pss].
+   - [split_interval p c1 c2 css] re-expresses the single interval
+     [c1, c2] as the list of [css] pieces it covers; [split_pat] lifts
+     this to a pattern (rebuilding aliases and or-patterns); and
+     [split_pss_qs pss qs] / [split_pss pss] rewrite the first column
+     of a matrix (and query row) accordingly.
+*)
+
+exception StringOrFloat
+exception NoConst
+
+(* Insert interval [d1..d2] into a sorted list of disjoint intervals,
+   splitting at intersection boundaries.
+
+   Invariant: [css] is sorted by lower bound and disjoint (no overlaps,
+   no touching). [insert] maintains this invariant.  Downstream code
+   (split_interval/split_pat/split_pss_qs) relies on this; violating
+   it produces malformed splits that silently corrupt exhaustiveness
+   and redundancy analysis for interval patterns.
+
+   When [d] overlaps an existing interval [c], we split into up to
+   3 parts: [before] (exclusive prefix of whichever starts first),
+   [mid] (the overlap), and [after] (suffix of whichever ends later).
+   The remaining suffix of [d] (after_d) is recursively inserted.
+   [prev_constant]/[next_constant] compute exclusive boundaries;
+   [None] means we're at a type edge so that part is empty.
+
+   WARNING: [loop] is parameterized on [d1 d2] deliberately: the recursive
+   call in the overlap branch must pass the *trimmed* suffix
+   [(ad1, ad2)], not the original bounds captured from the outer
+   scope.  Making [loop] close over [d1]/[d2] (and only taking [css]
+   as argument) would be a correctness bug -- the recursion would
+   compare against the original interval instead of its remaining
+   suffix, producing a [css] with overlapping and out-of-order
+   entries.  Do not try to "simplify" this by dropping the [d1 d2]
+   parameters from [loop]. *)
+let insert d1 d2 css =
+  let rec loop d1 d2 css =
+    match css with
+    | [] -> [(d1, d2)]
+    | (c1, c2) :: rem ->
+        if const_compare d2 c1 < 0 then
+          (* d entirely before c *)
+          (d1, d2) :: css
+        else if const_compare c2 d1 < 0 then
+          (* d entirely after c: pass d1/d2 through -- do NOT rely on
+             closure capture, it would be wrong after a trim below. *)
+          (c1, c2) :: loop d1 d2 rem
+        else begin
+          (* overlap: split into up to 3 parts *)
+          let before =
+            if const_compare d1 c1 < 0 then
+              match prev_constant c1 with
+              | Some pc1 -> [(d1, pc1)]
+              | None -> []
+            else if const_compare c1 d1 < 0 then
+              match prev_constant d1 with
+              | Some pd1 -> [(c1, pd1)]
+              | None -> []
+            else []
+          in
+          let mid_lo = const_max c1 d1 in
+          let mid_hi = const_min c2 d2 in
+          let after_c, after_d, rem' =
+            if const_compare c2 d2 < 0 then
+              (* c ends before d: trim d *)
+              match next_constant c2 with
+              | Some nc2 -> [], [(nc2, d2)], rem
+              | None -> [], [], rem
+            else if const_compare d2 c2 < 0 then
+              (* d ends before c: trim c *)
+              match next_constant d2 with
+              | Some nd2 -> [(nd2, c2)], [], rem
+              | None -> [], [], rem
+            else
+              (* same end *)
+              [], [], rem
+          in
+          before @ [(mid_lo, mid_hi)] @ after_c @
+            (* Recurse on the trimmed suffix [ad1..ad2] of d, into
+               the *remainder* of css.  NB: passing the trimmed
+               bounds explicitly is essential -- see the warning
+               note on the function above. *)
+            (match after_d with
+             | [(ad1, ad2)] -> loop ad1 ad2 rem'
+             | _ -> rem')
+        end
+  in
+  loop d1 d2 css
+
+(* Collect constant/interval bounds from a pattern *)
+let rec inter_pat k p =
+  match p.pat_desc with
+  | Tpat_constant (Const_string _ | Const_float _) -> raise StringOrFloat
+  | Tpat_constant c -> insert c c k
+  | Tpat_interval (c1, c2) -> insert c1 c2 k
+  | Tpat_any | Tpat_var _ -> raise NoConst
+  | Tpat_alias (p, _, _, _, _) -> inter_pat k p
+  | Tpat_or (p1, p2, _) -> inter_pat (inter_pat k p1) p2
+  | _ -> raise NoConst
+
+(* Collect all intervals from first column of pattern matrix *)
+let inters_pss pss =
+  List.fold_left
+    (fun k row ->
+       match row with
+       | [] -> k
+       | p :: _ ->
+           (try inter_pat k p with NoConst | StringOrFloat -> k))
+    [] pss
+
+(* Split a single interval [c1..c2] into sub-intervals aligned with the
+   disjoint decomposition [css].  [mk_itv] normalizes singleton intervals
+   to [Tpat_constant], maintaining the invariant that [Tpat_interval]
+   always has lo < hi strictly. *)
+let split_interval p c1 c2 css =
+  let mk_itv lo hi =
+    if const_compare lo hi = 0 then
+      { p with pat_desc = Tpat_constant lo }
+    else
+      { p with pat_desc = Tpat_interval (lo, hi) }
+  in
+  let rec loop c1 css =
+    match css with
+    | [] ->
+        if const_compare c1 c2 <= 0 then [mk_itv c1 c2] else []
+    | (l, h) :: rem ->
+        if const_compare c2 l < 0 then
+          (* remaining interval is before next split point *)
+          [mk_itv c1 c2]
+        else if const_compare c1 l < 0 then
+          (* gap before this split point, shouldn't happen after insert *)
+          mk_itv c1 (match prev_constant l with Some p -> p | None -> c1) ::
+          loop l css
+        else if const_compare c1 h <= 0 then
+          let hi = const_min c2 h in
+          mk_itv c1 hi ::
+          (match next_constant hi with
+           | Some next when const_compare next c2 <= 0 -> loop next rem
+           | _ -> [])
+        else
+          loop c1 rem
+  in
+  loop c1 css
+
+(* Split a pattern according to disjoint intervals *)
+let rec split_pat css p =
+  match p.pat_desc with
+  | Tpat_constant (Const_string _ | Const_float _) -> [p]
+  | Tpat_constant c -> split_interval p c c css
+  | Tpat_interval (c1, c2) -> split_interval p c1 c2 css
+  | Tpat_or (p1, p2, _) ->
+      split_pat css p1 @ split_pat css p2
+  | Tpat_alias (p', id, name, uid, ty) ->
+      List.map (fun sp ->
+        { p with pat_desc = Tpat_alias (sp, id, name, uid, ty) })
+        (split_pat css p')
+  | _ -> [p]
+
+(* Split first column of pss and qs according to disjoint intervals *)
+let split_pss_qs pss qs =
+  let css = inters_pss pss in
+  let css = match qs with
+    | [] -> css
+    | q :: _ -> (try inter_pat css q with NoConst | StringOrFloat -> css)
+  in
+  if css = [] then pss, qs
+  else
+    let split_row row =
+      match row with
+      | [] -> [row]
+      | p :: rest ->
+          let splits = split_pat css p in
+          List.map (fun sp -> sp :: rest) splits
+    in
+    let pss' = List.concat_map split_row pss in
+    let qs' = match qs with
+      | [] -> []
+      | q :: rest ->
+          let splits = split_pat css q in
+          (match splits with
+           | [_] -> qs  (* no splitting needed *)
+           | _ -> orify_many splits :: rest)
+    in
+    pss', qs'
+
+(* Split first column of pss only *)
+let split_pss pss = fst (split_pss_qs pss [])
+
 (*
   Core function :
   Is the last row of pattern matrix pss + qs satisfiable ?
@@ -1351,7 +1558,7 @@ and has_instances = function
    submatrices. All rows of [pss] are assumed to have the same length
    as [qs].
 *)
-let rec satisfiable pss qs = match pss with
+let rec satisfiable ?(split=true) pss qs = match pss with
 | [] -> has_instances qs
 | _  ->
     match qs with
@@ -1359,7 +1566,7 @@ let rec satisfiable pss qs = match pss with
     | q::qs ->
        match Patterns.General.(view q |> strip_vars).pat_desc with
        | `Or(q1,q2,_) ->
-          satisfiable pss (q1::qs) || satisfiable pss (q2::qs)
+          satisfiable ~split pss (q1::qs) || satisfiable ~split pss (q2::qs)
        | `Any ->
           let pss = simplify_first_col pss in
           if not (all_coherent (first_column pss)) then
@@ -1379,6 +1586,9 @@ let rec satisfiable pss qs = match pss with
                 constrs
           end
        | `Variant (l,_,r) when is_absent l r -> false
+       | (`Constant _ | `Interval _) when split ->
+          let pss, qs' = split_pss_qs pss (q :: qs) in
+          satisfiable ~split:false pss qs'
        | #Patterns.Simple.view as view ->
           let q = { q with pat_desc = view } in
           let pss = simplify_first_col pss in
@@ -1401,7 +1611,7 @@ let rec satisfiable pss qs = match pss with
 
    For considerations regarding the coherence check, see the comment on
    [satisfiable] above.  *)
-let rec list_satisfying_vectors pss qs =
+let rec list_satisfying_vectors ?(split=true) pss qs =
   match pss with
   | [] -> if has_instances qs then [qs] else []
   | _  ->
@@ -1410,8 +1620,8 @@ let rec list_satisfying_vectors pss qs =
       | q :: qs ->
          match Patterns.General.(view q |> strip_vars).pat_desc with
          | `Or(q1,q2,_) ->
-            list_satisfying_vectors pss (q1::qs) @
-            list_satisfying_vectors pss (q2::qs)
+            list_satisfying_vectors ~split pss (q1::qs) @
+            list_satisfying_vectors ~split pss (q2::qs)
          | `Any ->
             let pss = simplify_first_col pss in
             if not (all_coherent (first_column pss)) then
@@ -1454,6 +1664,10 @@ let rec list_satisfying_vectors pss qs =
                   end
           end
       | `Variant (l, _, r) when is_absent l r -> []
+      | (`Constant _ | `Interval _) when split ->
+          (* Split intervals before proceeding *)
+          let pss, qs' = split_pss_qs pss (q :: qs) in
+          list_satisfying_vectors ~split:false pss qs'
       | #Patterns.Simple.view as view ->
           let q = { q with pat_desc = view } in
           let hq, qargs = Patterns.Head.deconstruct q in
@@ -1578,6 +1792,7 @@ and exhaust_single_row ext p ps n =
   Seq.append sub_witnesses (Seq.delay p_witnesses)
 
 and specialize_and_exhaust ext pss n =
+  let pss = split_pss pss in
   let pss = simplify_first_col pss in
   if not (all_coherent (first_column pss)) then
     (* We're considering an ill-typed branch, we won't actually be able to
@@ -1665,6 +1880,7 @@ let rec pressure_variants tdefs = function
   | []    -> false
   | []::_ -> true
   | pss   ->
+      let pss = split_pss pss in
       let pss = simplify_first_col pss in
       if not (all_coherent (first_column pss)) then
         true
