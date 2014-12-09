@@ -1042,7 +1042,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
           pat_env = !env }
       else
         let cst1, cst2 = if cmp < 0 then cst1, cst2 else cst2, cst1 in
-        begin match cst1, cst2 with
+        begin (* match cst1, cst2 with
         (* still expand char intervals *)
         | Const_char c1, Const_char c2  ->
           let open Ast_helper.Pat in
@@ -1056,7 +1056,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
           in
           let p = {(loop c1) with ppat_loc=loc} in
           type_pat p expected_ty
-        | _ ->
+        | _ -> *)
           rp {
             pat_desc = Tpat_interval (cst1, cst2);
             pat_loc = loc; pat_extra=[];

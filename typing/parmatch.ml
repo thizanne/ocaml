@@ -130,7 +130,7 @@ let prev_constant = function
 (* unless the string ends with a '\000' (in which case the result would be
    that string without this trailing '\000'), there is no finite previous
    string *)
-  | Const_string _ -> raise Not_found
+  | Const_string _ -> failwith "prev_constant on string"
 
 let is_least_constant = function
   | Const_char c -> c = '\000'
@@ -1174,6 +1174,7 @@ let build_other_gadt ext env =
 (* Extract intervals as a list of sorted disjoint sub-intervals *)
 
 exception NoConst
+exception StringOrFloat
 
 (* Insert some interval into a sorted list of disjoint intervals *)
 
@@ -1225,6 +1226,8 @@ and insert_left c1 c2 css = match next_constant c1 with
 | None -> css
 
 let rec inter_pat k p = match p.pat_desc with
+| Tpat_constant (Const_string _|Const_float _)
+| Tpat_interval ((Const_string _|Const_float _),_) -> raise StringOrFloat
 | Tpat_constant c -> insert c c k
 | Tpat_interval (c1,c2) -> insert c1 c2 k
 | Tpat_var _|Tpat_any -> k
@@ -1241,8 +1244,9 @@ let inter_ps k ps = match ps with
 (* Exported, cannot raise NoConst *)
 let inters_pss pss =
   try List.fold_left inter_ps [] pss
-  with NoConst -> assert false
-
+  with
+  | NoConst -> assert false
+  | StringOrFloat -> []
 
 (* split pattern according to disjoint intervals *)
 let mk_inter_pat p c1 c2 =
@@ -1295,7 +1299,7 @@ let split_pss_qs pss qs =
   try
     let css = List.fold_left inter_ps (inter_ps [] qs) pss in
     List.map (split_ps css) pss,split_ps css qs
-  with NoConst ->
+  with NoConst|StringOrFloat ->
     pss,qs
 
 (* Internal interval collection and splitting *)
@@ -1396,7 +1400,7 @@ let split_pss pss =
   try
     let css = List.fold_left inter_ps [] pss in
     List.map (split_ps css) pss
-  with NoConst ->
+  with NoConst|StringOrFloat ->
     pss
  
 let rec exhaust ext pss n = match pss with
@@ -1809,7 +1813,7 @@ let rec every_satisfiables pss qs = match qs.active with
         else
 (* this is a real or-pattern *)
           every_satisfiables (push_or_column pss) (push_or qs)
-    | Tpat_interval _ ->
+    | Tpat_interval _|Tpat_constant _ ->
         (* Expand intervals later, in satisfiable *)
         every_satisfiables (push_no_or_column pss) (push_no_or qs)
     | Tpat_variant (l,_,r) when is_absent l r -> (* Ah Jacques... *)
