@@ -1955,6 +1955,23 @@ let rec cut n l =
 
 open Switch
 
+let rec do_tests_fail fail tst arg = function
+  | [] -> fail
+  | (c,act)::rem ->
+      Lifthenelse
+        (Lprim (tst, [arg ; Lconst (Const_base c)]),
+         do_tests_fail fail tst arg rem,
+         act)
+
+let rec do_tests_nofail tst arg = function
+  | [] -> fatal_error "Matching.do_tests_nofail"
+  | [_,act] -> act
+  | (c,act)::rem ->
+      Lifthenelse
+        (Lprim (tst, [arg ; Lconst (Const_base c)]),
+         do_tests_nofail tst arg rem,
+         act)
+
 let any_as_interval_canfail fail least l =
   let store = StoreExp.mk_store () in
 
@@ -2035,9 +2052,37 @@ let any_as_interval fail least l =
   | None -> any_as_interval_nofail least l
   | Some act -> any_as_interval_canfail act least l
 
-let make_test_sequence fail least lt_tst arg const_lambda_list =
+let split_sequence make_test_sequence lt_tst arg const_lambda_list =
+  let list1, list2 =
+    cut (List.length const_lambda_list / 2) const_lambda_list in
+  let least2 = fst (List.hd list2) in
+  Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base least2)]),
+              make_test_sequence list1, make_test_sequence list2)
+
+let const_of_interv_lambda ((c,c'),act) =
+  assert (const_compare c c' = 0);
+  (c,act)
+
+let make_test_sequence_neq fail tst lt_tst arg interv_lambda_list =
+  let interv_lambda_list = sort_lambda_list interv_lambda_list in
+  let const_lambda_list =
+    List.map const_of_interv_lambda interv_lambda_list in
+  let hs,const_lambda_list,fail =
+    share_actions_tree const_lambda_list fail in
+
+  let rec make_test_sequence const_lambda_list =
+    if List.length const_lambda_list >= 4 && lt_tst <> Pignore then
+      split_sequence make_test_sequence lt_tst arg const_lambda_list
+    else match fail with
+    | None -> do_tests_nofail tst arg const_lambda_list
+    | Some fail -> do_tests_fail fail tst arg const_lambda_list
+  in
+  hs (make_test_sequence const_lambda_list)
+
+
+let make_test_sequence_least fail least lt_tst arg interv_lambda_list =
   let const_lambda_list, store =
-    any_as_interval fail least const_lambda_list in
+    any_as_interval fail least interv_lambda_list in
   let hs, const_lambda_list =
     handle_shared_actions const_lambda_list store in
 
@@ -2045,14 +2090,7 @@ let make_test_sequence fail least lt_tst arg const_lambda_list =
   let rec make_test_sequence = function
   | [] -> assert false
   | [_, act] -> act
-  | l -> split_sequence l
-
-  and split_sequence const_lambda_list =
-    let list1, list2 =
-      cut (List.length const_lambda_list / 2) const_lambda_list in
-    let least2 = fst (List.hd list2) in
-    Lifthenelse(Lprim(lt_tst,[arg; Lconst(Const_base least2)]),
-                make_test_sequence list1, make_test_sequence list2)
+  | l -> split_sequence make_test_sequence lt_tst arg l
   in
   hs (make_test_sequence const_lambda_list)
 
@@ -2428,10 +2466,10 @@ and mk_failaction_pos partial seen ctx defs  =
     defs
 
 
-let prim_string_lessthan =
-  Pccall{prim_name = "caml_string_lessthan";
-         prim_arity = 2; prim_alloc = false;
-         prim_native_name = ""; prim_native_float = false}
+(* let prim_string_lessthan = *)
+(*   Pccall{prim_name = "caml_string_lessthan"; *)
+(*          prim_arity = 2; prim_alloc = false; *)
+(*          prim_native_name = ""; prim_native_float = false} *)
 
 
 let combine_constant_interval arg cst partial ctx def
@@ -2456,33 +2494,34 @@ let combine_constant_interval arg cst partial ctx def
    This partly applies to the native code compiler, which requires
    no duplicates *)
         let const_lambda_list = sort_lambda_list const_lambda_list in
-        if has_non_constant_intervals const_lambda_list then
-          make_test_sequence
-            fail (Const_string ("", None)) prim_string_lessthan
-            arg const_lambda_list
-        else
-          let sw =
-            List.map
-              (function
-              | (Const_string (s1, _), _), act -> s1, act
-              | _ -> assert false)
-              const_lambda_list in
-          let hs,sw,fail = share_actions_tree sw fail in
-          hs (Lstringswitch (arg,sw,fail))
+        assert (not (has_non_constant_intervals const_lambda_list));
+          (* make_test_sequence_least *)
+          (*   fail (Const_string ("", None)) prim_string_lessthan *)
+          (*   arg const_lambda_list *)
+        let sw =
+          List.map
+            (function
+            | (Const_string (s1, _), _), act -> s1, act
+            | _ -> assert false)
+            const_lambda_list in
+        let hs,sw,fail = share_actions_tree sw fail in
+        hs (Lstringswitch (arg,sw,fail))
     | Const_float _ ->
-        make_test_sequence
-          fail (Const_float (nan, None)) (Pfloatcomp Clt)
+        assert (not (has_non_constant_intervals const_lambda_list));
+        make_test_sequence_neq
+          fail
+          (Pfloatcomp Cneq) (Pfloatcomp Clt)
           arg const_lambda_list
     | Const_int32 _ ->
-        make_test_sequence
+        make_test_sequence_least
           fail (Const_int32 Int32.min_int) (Pbintcomp(Pint32, Clt))
           arg const_lambda_list
     | Const_int64 _ ->
-        make_test_sequence
+        make_test_sequence_least
           fail (Const_int64 Int64.min_int) (Pbintcomp(Pint64, Clt))
           arg const_lambda_list
     | Const_nativeint _ ->
-        make_test_sequence
+        make_test_sequence_least
           fail (Const_nativeint Nativeint.min_int) (Pbintcomp(Pnativeint, Clt))
           arg const_lambda_list
   in lambda1,jumps_union local_jumps total

@@ -1003,11 +1003,8 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         | Const_int _, Const_int _
         | Const_int32 _, Const_int32 _
         | Const_int64 _, Const_int64 _
-        | Const_nativeint _, Const_nativeint _
-        | Const_float _, Const_float _
-        | Const_string _, Const_string _ -> ()
+        | Const_nativeint _, Const_nativeint _ -> c1, c2
         | _ -> raise (Error (loc, !env, Invalid_interval)) end;
-        c1, c2
       | None, None -> raise (Error (loc, !env, Invalid_interval))
       | Some c1, None ->
         let c2 = match c1 with
@@ -1016,8 +1013,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         | Const_int32 _ -> Const_int32 Int32.max_int
         | Const_int64 _ -> Const_int64 Int64.max_int
         | Const_nativeint _ -> Const_nativeint Nativeint.max_int
-        | Const_float _ -> Const_float (infinity, None)
-        | Const_string _ -> raise (Error (loc, !env, Invalid_interval))
+        | _ -> raise (Error (loc, !env, Invalid_interval))
         in c1, c2
       | None, Some c2 ->
         let c1 = match c2 with
@@ -1026,8 +1022,7 @@ let rec type_pat ~constrs ~labels ~no_existentials ~mode ~env sp expected_ty =
         | Const_int32 _ -> Const_int32 Int32.min_int
         | Const_int64 _ -> Const_int64 Int64.min_int
         | Const_nativeint _ -> Const_nativeint Nativeint.min_int
-        | Const_float _ -> Const_float (nan, None)
-        | Const_string _ -> Const_string ("", None)
+        | _ -> raise (Error (loc, !env, Invalid_interval))
         in c1, c2
       in
       unify_pat_types loc !env (type_constant cst1) expected_ty;
@@ -4070,7 +4065,7 @@ let report_error env ppf = function
         name path tpath
         "must be qualified in this pattern"
   | Invalid_interval ->
-      fprintf ppf "@[Both bounds of an interval must have the same type.@]"
+      fprintf ppf "@[Only character or integer intervals are supported in patterns.@]"
   | Invalid_for_loop_index ->
       fprintf ppf
         "@[Invalid for-loop index: only variables and _ are allowed.@]"

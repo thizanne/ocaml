@@ -67,28 +67,9 @@ let const_interv_compare (l1,h1) (l2,h2) = match const_compare l1 l2 with
 | r -> r
 
 
-
-(* TODO: is this correct for all floats? (what about endianness?) *)
-(* for any regular float f (<> nan, +/-infinity), returns the smallest float
-   strictly greater than f *)
-let next_float f =
-  if f >= 0.0 then Int64.float_of_bits (Int64.succ (Int64.bits_of_float f))
-  else Int64.float_of_bits (Int64.pred (Int64.bits_of_float f))
-
-let prev_float f = -. (next_float (-. f))
-
-(* for any string s, returns the smallest string strictly greater than s
-   i.e. s with a char '\000' at the end *)
-let next_string s =
-  let len = String.length s in
-  let r = Bytes.create (len + 1) in
-  Bytes.blit_string s 0 r 0 len;
-  Bytes.set r len '\000';
-  Bytes.unsafe_to_string r
-
-(* for any constant c, returns the smallest constant of the same type strictly
-   greater than c (boxed in Some), and None if c is the greatest element of its
-   type *)
+(* for any non-float non-string constant c, returns the smallest constant of the
+   same type strictly greater than c (boxed in Some), and None if c is the
+   greatest element of its type *)
 let next_constant = function
   | Const_char c -> if c = '\255' then None
     else Some (Const_char (Char.chr ((Char.code c) + 1)))
@@ -100,16 +81,12 @@ let next_constant = function
     else Some (Const_int64 (Int64.succ i))
   | Const_nativeint i -> if i = Nativeint.max_int then None
     else Some (Const_nativeint (Nativeint.succ i))
-  | Const_float (f, _) -> if f = infinity then None
-    else if f = max_float then Some (Const_float (infinity, None))
-    else if f = neg_infinity then Some (Const_float (-.max_float, None))
-    else if Pervasives.compare f nan = 0 then Some (Const_float (neg_infinity, None))
-    else Some (Const_float (next_float f, None))
-  | Const_string (s, o) -> Some (Const_string (next_string s, o))
+  | Const_float _
+  | Const_string _ -> fatal_error "Parmatch.next_constant"
 
-(* for any constant c, returns the greatest constant of the same type strictly
-   smaller than c (boxed in Some), and None if c is the smallest element of its
-   type. Raise Not_found for non-empty strings *)
+(* for any non-float non-string constant c, returns the greatest constant of the
+   same type strictly smaller than c (boxed in Some), and None if c is the
+   smallest element of its type *)
 let prev_constant = function
   | Const_char c -> if c = '\000' then None
     else Some (Const_char (Char.chr ((Char.code c) - 1)))
@@ -121,16 +98,8 @@ let prev_constant = function
     else Some (Const_int64 (Int64.pred i))
   | Const_nativeint i -> if i = Nativeint.min_int then None
     else Some (Const_nativeint (Nativeint.pred i))
-  | Const_float (f, _) -> if Pervasives.compare f nan = 0 then None
-    else if f = neg_infinity then Some (Const_float (nan, None))
-    else if f = -.max_float then Some (Const_float (neg_infinity, None))
-    else if f = infinity then Some (Const_float (max_float, None))
-    else Some (Const_float (prev_float f, None))
-  | Const_string ("", _) -> None
-(* unless the string ends with a '\000' (in which case the result would be
-   that string without this trailing '\000'), there is no finite previous
-   string *)
-  | Const_string _ -> failwith "prev_constant on string"
+  | Const_float _
+  | Const_string _ -> fatal_error "Parmatch.prev_constant"
 
 let is_least_constant = function
   | Const_char c -> c = '\000'
@@ -156,12 +125,6 @@ let const_zero = function
 let const_min x y = if const_compare x y <= 0 then x else y
 
 let const_max x y = if const_compare x y >= 0 then x else y
-
-let extract_float = function
-| Const_float (f, _) -> f
-| _ -> assert false
-
-let interv_map f l = List.map (fun (x,y) -> f x, f y) l
 
 (***********************)
 (* Compatibility check *)
@@ -814,9 +777,7 @@ let full_match ignore_generalized closing env =  match env with
         (fun (tag,f) ->
           Btype.row_field_repr f = Rabsent || List.mem tag fields)
         row.row_fields
-| ({pat_desc = Tpat_constant (Const_string _) | Tpat_interval (Const_string _, _)},_) :: _ ->
-  (* Ranges of strings cannot be exhaustive yet (because _ cannot be the upperbound) *)
-  false
+| ({pat_desc = Tpat_constant (Const_string _ | Const_float _)},_) :: _ -> false
 | ({pat_desc = Tpat_constant cst | Tpat_interval (cst, _)},_) :: _ ->
   let interv = env_extract_intervals env in
   let interv = List.sort const_interv_compare interv in
@@ -936,7 +897,15 @@ let complete_constrs p all_tags =
 
 (* Auxiliary for build_other *)
 
-let build_other_constant cst p interv =
+let build_other_constant proj make first next p env =
+  let all = List.map (fun (p, _) -> proj p.pat_desc) env in
+  let rec try_const i =
+    if List.mem i all
+    then try_const (next i)
+    else make_pat (make i) p.pat_type p.pat_env
+  in try_const first
+
+let build_other_constant_for_interval cst p interv =
   let interv = List.sort const_interv_compare interv in
   let rec merge = function
   | [] -> []
@@ -983,99 +952,6 @@ let build_other_constant cst p interv =
         | Some _ -> try_chars rem
       in
       try_chars ['a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
-    | Some _, Const_string _ ->
-      (* for strings, try to make a string composed of chars from specific ranges *)
-      let rec try_chars = function
-      | [] -> assert false
-      | (cl, ch)::rem ->
-        let rec try_string s =
-          let sc = Const_string (s, None) in
-          match find_value sc interv with
-          | None -> sc
-          | Some (_, Const_string (h, _)) ->
-            let rec first_lt_ch i =
-              if i > String.length h then Some (i, cl)
-              else if h.[i] > ch then None
-              else if h.[i] < ch then Some (i, min cl (Char.chr (Char.code h.[i] + 1)))
-              else first_lt_ch (i+1)
-            in
-            begin match first_lt_ch 0 with
-            | None -> try_chars rem (* the pattern contain all [cl-ch]* strings *)
-            | Some (i, c) -> assert (i > 1);
-              (* we found a string that is not in the interval containing s,
-              however it may be in another interval *)
-              let r = Bytes.create i in
-              Bytes.blit_string h 0 r 0 (i-1);
-              Bytes.set r (i-1) c;
-              try_string (Bytes.unsafe_to_string r)
-            end
-          | Some _ -> assert false
-        in
-        try_string (String.make 1 cl)
-      in
-      try_chars ['*', '*'; 'a', 'z'; 'A', 'Z'; '0', '9'; ' ', '~'; '\000', '\255']
-    | Some (l, h), Const_float _ ->
-      (* do not take care of nan in this part, if it is the only missing float,
-      it will be found in fallback anyway *)
-      let minus x = if compare x nan = 0 then infinity else -.x in
-      let rec split_zero neg = function
-      | [] -> neg, []
-      | ((l,h)::_) as pos when compare l 0. > 0 -> neg, pos
-      | (_,h)::rem when compare h nan = 0 -> split_zero neg rem
-      | (l,h)::rem when compare h 0. < 0 -> split_zero ((-.h,minus l)::neg) rem
-      | (l,h)::pos -> (0.,minus l)::neg, (0., h)::pos
-      in
-      (* first try to find a small integer not in the pattern *)
-      let rec try_small_int l =
-        let build v = ceil (v *. (1.0 +. epsilon_float) +. epsilon_float) in
-        match l with
-        | [] -> None
-        | (_, h)::_ when h > 1e12 -> None
-        | [_, h] -> Some (build h)
-        | (_, h)::(((l, _)::_) as rem) ->
-          let v = build h in
-          if v < l then Some v
-          else try_small_int rem
-      in
-      (* otherwise, find a big hole and take the value in the middle *)
-      let rec try_big_hole eps l =
-        let check l h f =
-          if f > l && f < h then Some f
-          else None
-        in
-        let rec try_eps = function
-        | [] -> None
-        | [_, h] when h > max_float *. eps -> None
-        | [_, h] -> check h infinity (h +. 0.5 *. (max_float -. h))
-        | (_, h)::(((l, _)::_) as rem) ->
-          if (l -. h) /. h > eps then
-            match check h l (h +. 0.5 *. (l -. h)) with
-            | Some v -> Some v
-            | None -> try_eps rem
-          else
-            try_eps rem
-        in
-        if eps < epsilon_float then None
-        else
-          match try_eps l with
-          | Some v -> Some v
-          | None -> try_big_hole (eps *. eps) l
-      in
-      let neg, pos = split_zero [] (interv_map extract_float interv) in
-      let other_float = match try_small_int pos with
-          | Some v -> Some v
-          | None -> match try_small_int neg with
-              | Some v -> Some (-.v)
-              | None -> match try_big_hole 1e-6 pos with
-                | Some v -> Some v
-                | None -> match try_big_hole 1e-6 neg with
-                  | Some v -> Some (-.v)
-                  | None -> None
-      in
-      begin match other_float with
-      | Some v -> Const_float (v, None)
-      | None -> fallback l h (* otherwise, fallback *)
-      end
     | Some (l,h), _ ->
       (* for integer types, the fallback function is perfect *)
       fallback l h
@@ -1134,8 +1010,20 @@ let build_other ext env =  match env with
             make_pat (Tpat_or (pat, p_res, None)) p.pat_type p.pat_env)
           pat other_pats
     end
+| ({pat_desc=(Tpat_constant (Const_string _))} as p,_) :: _ ->
+    build_other_constant
+      (function Tpat_constant(Const_string (s, _)) -> String.length s
+              | _ -> assert false)
+      (function i -> Tpat_constant(Const_string(String.make i '*', None)))
+      0 succ p env
+| ({pat_desc=(Tpat_constant (Const_float _))} as p,_) :: _ ->
+    build_other_constant
+      (function Tpat_constant(Const_float (f,_)) -> f
+              | _ -> assert false)
+      (function f -> Tpat_constant(Const_float (f, None)))
+      0.0 (fun f -> f +. 1.0) p env
 | ({pat_desc= Tpat_constant cst | Tpat_interval (cst, _)} as p,_) :: _ ->
-    build_other_constant cst p (env_extract_intervals env)
+    build_other_constant_for_interval cst p (env_extract_intervals env)
 | ({pat_desc = Tpat_array args} as p,_)::_ ->
     let all_lengths =
       List.map
