@@ -16,6 +16,11 @@ Working version
 - #14692: Allow unparenthesized application expressions in record update syntax
   (Stephen Dolan, review by Damien Doligez)
 
+- Interval patterns (`lo .. hi`) now support integer types (int, int32,
+  int64, nativeint) in addition to char. They are compiled efficiently
+  using jump tables for small intervals and bound checks for large ones.
+  (Mehdi Bouaziz, Luc Maranget, Thibault Suzanne, review by TODO)
+
 ### Runtime system:
 
 - #13629: Major GC ephemeron cleanup.
