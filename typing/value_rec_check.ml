@@ -1321,6 +1321,12 @@ and pattern : type k . k general_pattern -> Env.t -> mode = fun pat env ->
   in
   Mode.join m_pat m_env
 
+(* Whether matching against the pattern requires inspecting the
+   structure of the matched value, as opposed to binding it without
+   looking at it (wildcard, variable, or aliases thereof).  Used by
+   [pattern] above: destructuring patterns place the scrutinee under
+   Dereference, others only under Guard.  An or-pattern destructures
+   as soon as one of its branches does. *)
 and is_destructuring_pattern : type k . k general_pattern -> bool =
   fun pat -> match pat.pat_desc with
     | Tpat_any -> false

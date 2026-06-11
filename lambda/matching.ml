@@ -412,6 +412,14 @@ let rec rev_split_at n ps =
 
 exception NoMatch
 
+(* [matcher discr p rem] specializes the row [p :: rem] under the
+   assumption that the matched value has head [discr]: it returns the
+   sub-patterns of [p] prepended to [rem] ([Head.arity discr] omegas
+   when [p] is a wildcard), or raises [NoMatch] if no value matching
+   [discr] can also match [p]. Used by [Context.specialize] and
+   [Default_environment.specialize] to compute jump summaries, so it
+   must over-approximate "may match": e.g. two extension constructors
+   are kept compatible whenever rebinding may make them equal. *)
 let matcher discr (p : Simple.pattern) rem =
   let discr = expand_record_head discr in
   let p = expand_record_simple p in
@@ -1388,6 +1396,14 @@ let pm_free_variables { cases } =
 
 (* Basic grouping predicates *)
 
+(* [can_group discr pat] decides whether the head of [pat] may be
+   grouped in the same pm as [discr] by [split_no_or]: any two heads
+   admitted into a group must be syntactically decidably equal or
+   incompatible. In particular two extension constructors are only
+   grouped if their paths are equal ([Path.same]), as distinct paths
+   may denote the same constructor through rebinding. Note that each
+   candidate is compared with the group's first head [discr] only, so
+   the admission criterion must be transitive. *)
 let can_group discr pat =
   let open Patterns.Head in
   match (discr.pat_desc, (Simple.head pat).pat_desc) with
@@ -1627,7 +1643,13 @@ and split_no_or cls args def k =
      There is some subtlety regarding the handling of extension constructors
      (where it is not always possible to syntactically decide whether two
      different heads match different values), but this is handled by the
-     [can_group] function. *)
+     [can_group] function.
+
+     [collect] admits a clause into the current group when [can_group]
+     accepts its head against the group discriminator [group_discr] and
+     [safe_before] allows it to commute with the already-rejected
+     clauses; the rejected clauses form the next pm, reached through an
+     exit added to the default environment. *)
   let rec split (cls : Simple.clause list) =
     let discr = what_is_first_case cls in
     collect discr [] [] cls
@@ -1944,6 +1966,10 @@ type 'a division = {
   cells : ('a * cell) list
 }
 
+(* [add_in_div make_matching_fun eq_key key patl_action division] adds
+   the row [patl_action] to the cell of [division] whose key is
+   [eq_key]-equal to [key], creating the cell (prepended to
+   [division.cells]) if no such cell exists yet. *)
 let add_in_div make_matching_fun eq_key key patl_action division =
   let cells =
     match List.find_opt (fun (k, _) -> eq_key key k) division.cells with
@@ -1957,6 +1983,14 @@ let add_in_div make_matching_fun eq_key key patl_action division =
   in
   { division with cells }
 
+(* [divide] groups the clauses of [pm] into cells, one per distinct
+   head key (modulo [eq_key]), each holding the specialized rows whose
+   head has that key. As [List.fold_right] processes clauses bottom-up
+   and fresh keys are prepended, [cells] orders keys by their *last*
+   source occurrence (not the first); within a cell, actions are in
+   source order. The relative order of cells is thus unspecified for
+   callers; this is sound as they either sort the resulting actions, or
+   have pairwise-disjoint keys per the [split_no_or] invariant. *)
 let divide get_expr_args eq_key get_key get_pat_args ctx
     (pm : (split_args, Simple.clause) pattern_matching) =
   let add ((p, patl), action) division =
@@ -3101,6 +3135,12 @@ let mk_failaction_pos arg_partial seen ctx defs =
     (None, fails, jumps)
   )
 
+(* [combine_constant] assembles the dispatch code for a column of
+   constants, which the division invariant guarantees to be pairwise
+   distinct (hence disjoint): an integer switch for [Const_int] and
+   [Const_char], a string switch for [Const_string], and comparison
+   test sequences for floats and boxed integers. Disjointness allows
+   reordering the cases freely; every strategy sorts them. *)
 let combine_constant loc arg cst partial ctx def
     (const_lambda_list, total, _pats) =
   let fail, local_jumps = mk_failaction_neg partial ctx def in
@@ -3943,6 +3983,9 @@ and do_compile_matching ~scopes repr partial ctx pmh =
             (divide_record ~scopes lbl.lbl_all ph)
             Context.combine
       | Constant cst ->
+          (* Routes all constant heads: int, char, string, float,
+             int32, int64, nativeint. [cst] is only a representative
+             used to select the strategy in [combine_constant]. *)
           compile_test
             divide_constant
             (combine_constant ploc arg cst arg_partial)
@@ -4280,6 +4323,9 @@ let flatten_pattern size p =
   | Tpat_any -> Patterns.omegas size
   | _ -> raise Cannot_flatten
 
+(* Flatten a tuple pattern (or a wildcard) of arity [size] into the
+   list of its sub-patterns; only called from [do_for_multiple_match],
+   where typing guarantees no other head can occur. *)
 let flatten_simple_pattern size (p : Simple.pattern) =
   match p.pat_desc with
   | `Tuple args -> (List.map snd args)

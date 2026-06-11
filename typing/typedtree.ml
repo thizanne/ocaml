@@ -712,6 +712,8 @@ let as_computation_pattern (p : pattern) : computation general_pattern =
     pat_attributes = [];
   }
 
+(* Compute the category (value or computation) of a pattern
+   description. *)
 let rec classify_pattern_desc : type k . k pattern_desc -> k pattern_category =
   function
   | Tpat_alias _ -> Value
@@ -741,6 +743,8 @@ and classify_pattern
 
 type pattern_action =
   { f : 'k . 'k general_pattern -> unit }
+(* Apply [f] to the immediate sub-patterns of a pattern description,
+   without recursing into them. *)
 let shallow_iter_pattern_desc
   : type k . pattern_action -> k pattern_desc -> unit
   = fun f -> function
@@ -761,6 +765,8 @@ let shallow_iter_pattern_desc
 
 type pattern_transformation =
   { f : 'k . 'k general_pattern -> 'k general_pattern }
+(* Rebuild a pattern description, applying [f] to each immediate
+   sub-pattern and leaving everything else unchanged. *)
 let shallow_map_pattern_desc
   : type k . pattern_transformation -> k pattern_desc -> k pattern_desc
   = fun f d -> match d with

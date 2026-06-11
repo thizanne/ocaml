@@ -292,6 +292,7 @@ let extension_constructor sub ext =
       | Text_rebind (_p, lid) -> Pext_rebind (map_loc sub lid)
     )
 
+(* Untype a pattern; pat_extra nodes are turned back into syntax first. *)
 let pattern : type k . _ -> k T.general_pattern -> _ = fun sub pat ->
   let loc = sub.location sub pat.pat_loc in
   (* todo: fix attributes on extras *)
