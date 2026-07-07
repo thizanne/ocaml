@@ -309,10 +309,9 @@ let http_status_class = function
 \end{caml_example}
 
 The bounds must be integer literals; arbitrary expressions or
-identifiers such as @'max_int'@ are not allowed. Beware that the
-lower bound and the @".."@ symbol must be separated by at least one
-space: without it, as in @'0..10'@, the lexer reads @'0.'@ as a
-floating-point literal and the pattern is rejected.
+identifiers such as @'max_int'@ are not allowed. No whitespace is
+required around @".."@: @'0..10'@ is read as the interval from
+@'0'@ to @'10'@.
 
 Range patterns follow the usual first-match rule: when the ranges of
 several cases overlap, a matching value selects the first case whose
