@@ -14,6 +14,10 @@
 (*                                                                        *)
 (**************************************************************************)
 
+(* Pattern views shared by the pattern-matching analyses; see the
+   toplevel comment of lambda/matching.ml for an overview of the
+   pattern-matching pipeline. *)
+
 open Asttypes
 open Typedtree
 open Types

@@ -13,7 +13,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* Detection of partial matches and unused match cases. *)
+(* Detection of partial matches and unused match cases.
+   See the toplevel comment of lambda/matching.ml for an overview of
+   how pattern matching is type-checked, analysed and compiled. *)
 
 open Misc
 open Asttypes

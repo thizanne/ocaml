@@ -13,7 +13,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* Typechecking for the core language *)
+(* Typechecking for the core language.
+   See the toplevel comment of lambda/matching.ml for an overview of
+   how pattern matching is type-checked, analysed and compiled. *)
 
 [@@@ocaml.warning "-60"] module Str = Ast_helper.Str (* For ocamldep *)
 [@@@ocaml.warning "+60"]
