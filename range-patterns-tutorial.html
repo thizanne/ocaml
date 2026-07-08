@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Understanding the integer interval patterns series — a tutorial</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #57606a; --accent: #0550ae;
+    --code-bg: #f6f8fa; --border: #d0d7de; --warn-bg: #fff8c5; --warn-border: #d4a72c;
+    --good-bg: #ddf4e4; --bad-bg: #ffebe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+      --code-bg: #161b22; --border: #30363d; --warn-bg: #3a2d00; --warn-border: #9e6a03;
+      --good-bg: #12261e; --bad-bg: #2d1214;
+    }
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0 auto; padding: 2rem 1.2rem 6rem; max-width: 48rem;
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.65 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 .3rem; }
+  h2 { font-size: 1.45rem; margin-top: 3rem; border-bottom: 2px solid var(--border); padding-bottom: .3rem; }
+  h3 { font-size: 1.15rem; margin-top: 2.2rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .86em;
+  }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .out { border-left: 4px solid var(--accent); }
+  .shell::before { content: "$ "; color: var(--muted); }
+  .box { border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1.1rem; margin: 1.2rem 0; }
+  .key { background: var(--warn-bg); border-color: var(--warn-border); }
+  .key .tag { font-weight: 700; color: var(--warn-border); text-transform: uppercase; font-size: .75rem; letter-spacing: .06em; }
+  .bug { background: var(--bad-bg); }
+  .fix { background: var(--good-bg); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid var(--border); padding: .4rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); }
+  .commit { color: var(--muted); font-family: ui-monospace, monospace; font-size: .85em; }
+  details { margin: .8rem 0; }
+  summary { cursor: pointer; color: var(--accent); }
+  .toc { border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.4rem; background: var(--code-bg); }
+  .toc ol { margin: .4rem 0; padding-left: 1.4rem; }
+  .matrix { font-family: ui-monospace, monospace; white-space: pre; }
+  .fn { font-style: normal; font-weight: 600; }
+  .pipedoc h4 {
+    margin: 1.3rem 0 .2rem; font-size: .8rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--accent);
+  }
+  .pipedoc-title { font-weight: 700; margin-top: .2rem; }
+  .pipedoc-title span { font-weight: 400; font-size: .85rem; color: var(--muted); }
+  .pipedoc pre { font-size: .78em; }
+</style>
+</head>
+<body>
+
+<h1>Understanding the integer interval patterns series</h1>
+<p class="subtitle">A step-by-step tutorial for reading PR&nbsp;#1
+(<code>range_patterns_v8</code>), written for someone who uses OCaml pattern
+matching daily but has never opened the compiler. Work through it with the
+branch checked out; every output shown here is real and reproducible.</p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#setup">Setup: build the compiler, learn to spy on it</a></li>
+  <li><a href="#pipeline">Background: the life of a <code>match</code></a></li>
+  <li><a href="#matrices">Background: pattern matrices, the one idea behind everything</a></li>
+  <li><a href="#feature">What the series adds, from 30,000 feet</a></li>
+  <li><a href="#walkthrough">The sixteen commits, one by one</a></li>
+  <li><a href="#overlap">The hard part: overlapping intervals (and two real miscompilations)</a></li>
+  <li><a href="#experiments">Experiments to try</a></li>
+  <li><a href="#glossary">Glossary</a></li>
+</ol>
+</nav>
+
+<h2 id="setup">1. Setup: build the compiler, learn to spy on it</h2>
+
+<p>Check out the feature branch and build (the tree self-bootstraps; the
+first build takes a few minutes):</p>
+
+<pre><code class="shell">git checkout range_patterns_v8 && ./configure && make -j</code></pre>
+
+<p>The single most useful skill for this tutorial: the compiler will show you
+its intermediate representations. Because you are running the in-tree
+compiler, point it at the in-tree stdlib:</p>
+
+<pre><code>alias oc='./ocamlc.opt -nostdlib -I ./stdlib'
+oc -dparsetree -c ex.ml   # what the parser produced
+oc -dtypedtree -c ex.ml   # what the type checker produced
+oc -dlambda    -c ex.ml   # what pattern-match compilation produced
+</code></pre>
+
+<p>You will use these three flags constantly. Everything the series does is
+visible through one of them.</p>
+
+<h2 id="pipeline">2. Background: the life of a <code>match</code></h2>
+
+<p>Before reading any diff, you need the map. A <code>match</code> expression
+crosses five stations:</p>
+
+<pre>
+ parser.mly ──▶ typecore.ml ──▶ parmatch.ml ──▶ translcore.ml ──▶ matching.ml
+ (Parsetree)    (Typedtree)     (warnings)      (elaboration)     (Lambda IR)
+</pre>
+
+<p>The canonical description of this pipeline is the toplevel comment of
+<code>lambda/matching.ml</code> (added by PR&nbsp;#3, which this series is
+stacked on). Here it is, typeset for reading — go through it now; the rest
+of this tutorial adds worked examples to it.</p>
+
+<div class="box pipedoc">
+<p class="pipedoc-title">“Pattern matching in the compiler: the pipeline”<br>
+<span>typeset from the toplevel comment of <code>lambda/matching.ml</code>,
+which remains the authoritative copy</span></p>
+
+<p>This section is an overview of how pattern matching is handled across
+the compiler, from parsing to code generation; the headers of
+<code>typing/typecore.ml</code>, <code>typing/parmatch.ml</code> and
+<code>typing/patterns.mli</code> point here.</p>
+
+<pre>parser.mly --> typecore.ml --> parmatch.ml --> translcore.ml --> this file
+(Parsetree)    (Typedtree)     (warnings)      (elaboration)     (Lambda)</pre>
+
+<h4>Parsing</h4>
+<p>Patterns enter the compiler as the <code>Parsetree.Ppat_*</code> nodes
+built by <code>parsing/parser.mly</code>: constants, constructors,
+or-patterns (<code>Ppat_or</code>), aliases (<code>Ppat_alias</code>), etc.
+Character ranges such as <code>'a'..'z'</code> are parsed as
+<code>Ppat_interval</code>; only character bounds survive type checking,
+which expands the range into an or-pattern enumerating every character in
+between.</p>
+
+<h4>Type checking</h4>
+<p><code>Typecore.type_pat</code> (recursive worker:
+<code>type_pat_aux</code>) checks a parsetree pattern against an expected
+type and returns a typedtree pattern carrying its type and environment. The
+typedtree distinguishes “value” patterns, which match values, from
+“computation” patterns, which also match the effect of a computation
+(<code>Tpat_value</code>, <code>Tpat_exception</code>);
+<code>type_pat</code> receives the expected category as a GADT tag (see the
+comment above <code>Typecore.pure</code>).
+<code>Typedtree.split_pattern</code> then separates a computation pattern
+into its value and exception parts, so that the two halves of a match are
+checked and compiled separately.</p>
+
+<h4>Warnings</h4>
+<p><code>Typecore.type_cases</code> runs the match analyses of
+<code>typing/parmatch.ml</code> through <code>Parmatch.check_partial</code>
+and <code>check_unused</code>: exhaustiveness is computed on the value
+clauses, redundancy on value and exception clauses separately. The
+algorithms follow Maranget, “Warnings for pattern matching” (JFP 17(3),
+2007). The central notion is the usefulness of a row with respect to a
+matrix (<code>satisfiable</code>, <code>every_satisfiables</code>):
+exhaustiveness is usefulness of a wildcard row (<code>exhaust</code>), and a
+clause is redundant when it is not useful with respect to the previous
+unguarded ones (<code>le_pat</code> and <code>get_mins</code> prune the
+matrix). Counter-examples are built by <code>full_match</code> and
+<code>build_other</code>, and — as they may be ill-typed in the presence of
+GADTs — refined by <code>Typecore.check_counter_example_pat</code> (see the
+comment around <code>counter_example_checking_info</code>). The resulting
+<code>Partial</code>/<code>Total</code> verdict is stored in the typedtree
+and reused here.</p>
+
+<h4>Pattern views</h4>
+<p>The analyses and this module do not consume raw typedtree patterns,
+whose head can be a variable, an alias or an or-pattern as well as an
+actual shape: if every pattern match over patterns handled those three
+administrative cases itself, forgetting one would be a silent bug.
+<code>typing/patterns.ml</code> instead encodes in the type what may appear
+at a pattern's head. <code>General</code> re-expresses the typedtree as a
+polymorphic variant; <code>Half_simple</code>
+(<code>General.strip_vars</code>) guarantees that no variable or alias
+remains at the head, turning them into bindings on the clause's action;
+<code>Simple</code> further excludes or-patterns at the head, which the
+precompilation pass of this module splits into separate rows. The
+constraint bears on the head only: sub-patterns are arbitrary, so
+<code>Some (1 | 2)</code> is simple while <code>(1 | 2)</code> is only
+half-simple. Finally, the <code>Head</code> module isolates the head
+constructor alone: <code>Head.deconstruct</code> returns a pattern's head
+and its immediate sub-patterns, and <code>Head.arity</code> the number of
+those (a constant has arity 0, <code>Some</code> has arity 1, a tuple its
+width) — the currency of matrix specialization throughout the analyses and
+this module.</p>
+
+<h4>Elaboration</h4>
+<p><code>lambda/translcore.ml</code> invokes this module through one entry
+point per elaboration site (see <code>matching.mli</code>):
+<code>for_function</code>, <code>for_let</code>,
+<code>for_multiple_match</code>, <code>for_trywith</code>,
+<code>for_handler</code>, <code>for_tupled_function</code>,
+<code>for_optional_arg_default</code>. Translcore also compiles
+<code>when</code> guards (<code>transl_guard</code>) to
+<code>Lifthenelse (cond, body, staticfail)</code>;
+<code>compile_match</code> uses <code>patch_guarded</code> to plug the rest
+of the match in place of the <code>staticfail</code> placeholder.</p>
+
+<h4>Code generation</h4>
+<p>This module compiles matches to Lambda following the scheme described in
+the next section. Columns of integer-like constants (ints, chars,
+constructor and variant tags) are dispatched through
+<code>call_switcher</code> and <code>lambda/switch.ml</code>, which compiles
+a generic switch into a mixture of if-tests and jump tables. The
+<code>Context</code>, <code>Default_environment</code> and
+<code>Jumps</code> modules below track, per program point, the values that
+can reach it and the live exits; the row specializer <code>matcher</code>
+deliberately over-approximates “may match”. Finally, the
+<code>Partial</code>/<code>Total</code> verdict from typing drives failure
+handling (<code>toplevel_handler</code>, <code>failure_handler</code>): a
+<code>Partial</code> match is wrapped in a static catch whose handler raises
+<code>Match_failure</code> (or re-raises, for <code>try...with</code>); if
+typing said <code>Total</code> but compilation degrades to
+<code>Partial</code>, warning <code>Degraded_to_partial_match</code> is
+emitted, and <code>-safer-matching</code>
+(<code>Clflags.safer_matching</code>) forces <code>Partial</code>
+everywhere.</p>
+</div>
+
+<h3>2.1 Station 1 — the parser</h3>
+
+<p>The parser turns text into <code>Parsetree.Ppat_*</code> nodes and does
+<em>no thinking</em>. Try it:</p>
+
+<pre><code>echo 'let f x = match x with 0 .. 10 -> 1 | _ -> 2' > ex.ml
+oc -dparsetree -c ex.ml</code></pre>
+
+<pre class="out"><code>pattern (ex.ml[1,0+23]..[1,0+30])
+  Ppat_interval
+  constant (ex.ml[1,0+23]..[1,0+24])
+    PConst_int (0,None)
+  constant (ex.ml[1,0+28]..[1,0+30])
+    PConst_int (10,None)</code></pre>
+
+<p>Surprise #1: <code>Ppat_interval</code> <em>already existed</em> before
+this series — it is how char ranges <code>'a'..'z'</code> parse, and the
+grammar always accepted any constants as bounds. Rejecting non-char bounds
+was the <em>type checker's</em> job. So the series needs no parser change.</p>
+
+<h3>2.2 Station 2 — the type checker</h3>
+
+<p><code>Typecore.type_pat</code> checks a parsetree pattern against an
+expected type and produces a <em>typedtree</em> pattern (every node now
+carries its type and environment). On trunk, this is where char ranges get
+rewritten: <code>'a'..'c'</code> becomes the or-pattern
+<code>'a'|'b'|'c'</code>. See for yourself:</p>
+
+<pre><code>echo "let g c = match c with 'a'..'c' -> 1 | _ -> 2" > ex.ml
+oc -dtypedtree -c ex.ml</code></pre>
+
+<pre class="out"><code>Tpat_or
+  Tpat_constant Const_char 61   (* 0x61 = 'a' *)
+  Tpat_or
+    Tpat_constant Const_char 62
+    Tpat_constant Const_char 63 ...</code></pre>
+
+<p>That trick obviously cannot scale to <code>min_int .. max_int</code> —
+which is the whole reason this series exists.</p>
+
+<h3>2.3 Station 3 — the warnings analyses</h3>
+
+<p><code>typing/parmatch.ml</code> answers two questions about a typed match:
+is it exhaustive (warning 8)? is any clause useless (warning 11)? It is
+driven from <code>Typecore.type_cases</code> via
+<code>Parmatch.check_partial</code> and <code>check_unused</code>. The
+algorithms come from Maranget's <em>“Warnings for pattern matching”</em>
+(JFP 2007). Section 3 below gives you the core idea.</p>
+
+<h3>2.4 Stations 4–5 — elaboration and compilation</h3>
+
+<p><code>lambda/translcore.ml</code> calls into
+<code>lambda/matching.ml</code> (entry points <code>for_function</code>,
+<code>for_let</code>, <code>for_trywith</code>…), which compiles the match to
+the untyped Lambda IR, following Le Fessant–Maranget (ICFP 2001). Integer
+dispatch ultimately goes through <code>lambda/switch.ml</code>, which decides
+between if-trees and jump tables. You will read real Lambda output in
+section 5.</p>
+
+<h2 id="matrices">3. Background: pattern matrices, the one idea behind everything</h2>
+
+<p>Both the warnings analyses and the compiler see a match as a
+<strong>matrix</strong>: one row per clause, one column per value being
+matched. For</p>
+
+<pre><code>match x, y with
+| 0, _     -> A
+| _, true  -> B
+| _, _     -> C</code></pre>
+
+<p>the matrix is:</p>
+
+<pre class="matrix">
+  row 1:   0      _
+  row 2:   _      true
+  row 3:   _      _
+</pre>
+
+<p>All algorithms walk this matrix by <strong>specialization</strong>: pick
+the first column, pick a <em>head</em> (a top-level constructor, like the
+constant <code>0</code> or <code>true</code>), and build the sub-matrix of
+rows that could match a value starting with that head, with the first column
+consumed. A wildcard row survives every specialization. There is also the
+<strong>default matrix</strong>: rows that match values whose head is
+<em>none of the listed ones</em>.</p>
+
+<p>Two crown jewels are built from this single operation:</p>
+
+<ul>
+  <li><strong>Usefulness</strong> (<code class="fn">Parmatch.satisfiable</code>): is there a
+  value that matches row <code>q</code> but none of the rows above it?
+  A match is <em>exhaustive</em> iff a wildcard row is <em>not</em> useful
+  after all clauses (<code class="fn">exhaust</code> even builds the witness — that is
+  the counter-example the compiler prints). A clause is <em>redundant</em>
+  iff it is not useful after the previous ones.</li>
+  <li><strong>Compilation</strong> (<code class="fn">Matching.compile_match</code>): specialize
+  on each head of the first column, compile each sub-matrix recursively,
+  emit a dispatch (switch / if-chain) over the heads, and chain the
+  fall-through cases with static exits (<code>catch … with (exit n) …</code>
+  in Lambda).</li>
+</ul>
+
+<div class="box key"><span class="tag">The key invariant</span><br>
+For the compilation-by-specialization strategy to be sound, the heads
+grouped into one dispatch must be <strong>pairwise disjoint or equal</strong>
+— a value must not be able to match two <em>different</em> cells of the same
+dispatch. Trunk maintains this invariant in <code>split_no_or</code>
+(see its comment in <code>matching.ml</code>): constants are naturally
+pairwise disjoint-or-equal, and the one pre-existing exception —
+extension constructors, which may alias through rebinding — is handled by
+refusing to group them (<code class="fn">can_group</code>) and chaining the groups with
+exits instead. <strong>Keep this invariant in mind: intervals will break it,
+and the most important commit of the series restores it.</strong></div>
+
+<h2 id="feature">4. What the series adds, from 30,000 feet</h2>
+
+<p>As a user you already know the feature: <code>lo .. hi</code> now works
+for <code>int</code>, <code>int32</code>, <code>int64</code>,
+<code>nativeint</code>, matching inclusively, first match wins, bounds in
+either order. Behind the scenes, one new typedtree constructor carries the
+range through the compiler <em>without enumeration</em>:</p>
+
+<pre><code>echo 'let h x = match x with 5 .. 10 -> 1 | _ -> 2' > ex.ml
+oc -dtypedtree -c ex.ml | grep interval</code></pre>
+<pre class="out"><code>Tpat_interval Const_int 5..Const_int 10</code></pre>
+
+<p>Everything else in the series is the consequence of that one node
+existing: every layer that pattern-matches on patterns must handle it, the
+warnings analyses must reason about <em>ranges</em> instead of counting
+constants, and the compiler must dispatch on ranges soundly — including when
+they overlap. For contrast, this is what any pre-series compiler says (captured
+with released <code>ocamlc</code> 5.3; trunk's message is identical):</p>
+
+<pre class="out"><code>Error: Only character intervals are supported in patterns.</code></pre>
+
+<h2 id="walkthrough">5. The sixteen commits, one by one</h2>
+
+<p>Get the list (hashes will differ if the branch was rebased; use the
+titles):</p>
+
+<pre><code class="shell">git log --reverse --oneline patmatch_docs..range_patterns_v8</code></pre>
+
+<p>For each commit below: read the summary here, then
+<code>git show &lt;hash&gt;</code> and look for the named functions. The series
+is bisectable — every commit builds and passes its own tests, so you can
+<code>git checkout</code> any of them and poke at the compiler it builds.</p>
+
+<h3>Commit 1 — Add tests for interval pattern matching</h3>
+<p>Pure test file (<code>exhaustiveness_interval.ml</code>), written as
+<em>expect tests</em>: source followed by the compiler output frozen in the
+file. The trick to understand: at this commit, every integer-interval block
+expects the trunk <em>error</em>. Later commits update these expectations as
+behavior changes — so each subsequent diff <em>shows you its own effect</em>
+in the tests. When reading commits 3–10, always scroll to the test-file part
+of the diff last: it is the behavioral summary.</p>
+
+<h3>Commit 2 — Add Tpat_interval to typed tree infrastructure</h3>
+<p>Adds the constructor <code>Tpat_interval : constant * constant</code> to
+<code>typing/typedtree.mli</code> — read its doc comment, it states the
+invariant (<em>strictly</em> ordered bounds; equal bounds collapse to a
+constant; chars never appear). Then it threads the constructor through every
+place that matches on patterns — starting with the pattern <em>views</em>
+described in the pipeline overview of section 2:</p>
+
+<pre class="out"><code>module Simple = struct
+  type view = [
+    | `Any
+    | `Constant of constant
+    | `Interval of constant * constant     (* &lt;- added by this commit *)
+    | `Tuple of (string option * pattern) list
+    | ...
+  ]
+end</code></pre>
+
+<p>The same line lands in <code>General.view</code> and
+<code>Head.desc</code>; an interval, like a constant, has
+<code>Head.arity</code> 0 — matching it inspects the scrutinee but opens
+nothing further, which is why the additions to the generic
+iterators/mappers are all no-ops. Printers, <code>untypeast</code> and cmt
+output follow. Fourteen files, all mechanical, and all <em>dead code</em>:
+nothing produces the constructor yet. It must be one commit because the
+compiler builds with warnings-as-errors: adding a variant to the views
+forces every consumer — parmatch's analyses, matching.ml, the printers —
+to say what it does with an interval head, and a new constructor plus an
+unhandled match anywhere = broken build.</p>
+
+<h3>Commit 3 — Produce Tpat_interval for non-char integer intervals</h3>
+<p>The feature switch, in <code>Typecore.type_pat_aux</code>'s
+<code>Ppat_interval</code> case. Read the new code top to bottom; it is
+self-contained:</p>
+<ul>
+<li><code>get_bound</code> converts each bound <em>at its own location</em>
+(so errors underline the offending bound, not the whole interval), rejects
+float/string with <code>Invalid_interval</code>, and unifies the bound's
+type with the expected type — which is what rejects <code>0l .. 100</code>.</li>
+<li>Bounds are sorted with <code>Parmatch.const_compare</code>
+(<code>10 .. 0</code> ≡ <code>0 .. 10</code>), a degenerate
+<code>n .. n</code> becomes <code>Tpat_constant</code>, chars keep the
+old or-expansion, and everything else becomes <code>Tpat_interval</code>.</li>
+</ul>
+<p>From here until commit 10, typing and warnings work but code generation
+does not exist: compiling an interval match dies with a fatal error, and the
+expect tests <em>record that</em> honestly. This staging is deliberate.</p>
+
+<h3>Commits 4–6 — parmatch, in three layers</h3>
+<p>The warnings analyses learn ranges. The overview comment added at the top
+of parmatch's interval section (in commit 6) is your map. The trilogy:</p>
+
+<table>
+<tr><th>Commit</th><th>What it teaches parmatch</th><th>Key functions</th></tr>
+<tr><td>4 — head compatibility</td>
+<td>“can these two patterns match a common value?” Constant-in-interval is
+membership; interval-vs-interval is intersection.</td>
+<td><code>inside</code>, <code>intersects</code>, <code>compat</code>,
+<code>simple_match</code>, <code>all_coherent</code></td></tr>
+<tr><td>5 — exhaustiveness</td>
+<td>a column of constants/intervals covers the type iff the sorted ranges
+run gaplessly from the type's minimum to its maximum; counter-examples come
+from the first gap.</td>
+<td><code>next_constant</code>/<code>prev_constant</code> (successors that
+return <code>None</code> at type edges — no overflow),
+<code>full_match</code>, <code>build_other</code>,
+<code>sorted_intervals_of_env</code></td></tr>
+<tr><td>6 — subsumption &amp; redundancy</td>
+<td>when does one pattern cover another (<code>le_pat</code>), what is their
+intersection (<code>lub</code>), and how or-pattern redundancy is deferred
+(<code>every_satisfiables</code>).</td>
+<td><code>le_pat</code>, <code>lub</code>, <code>every_satisfiables</code></td></tr>
+</table>
+
+<p>Two things worth dwelling on. First, watch commit 5 work:</p>
+<pre><code>let gap x = match x with 0 .. 10 -> 1 | 12 .. 20 -> 2</code></pre>
+<pre class="out"><code>Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+  Here is an example of a case that is not matched: 11</code></pre>
+<p>That “11” is <code>build_other</code> finding the first gap in the merged
+ranges. Second, in commit 6, read the long comment above
+<code>le_pat</code>'s interval cases: the constant-vs-interval rule is
+<em>deliberately asymmetric</em> (a constant only subsumes an interval when
+the interval is that single point, while an interval subsumes a constant it
+contains). The comment explains how the “obvious” symmetric rule would
+corrupt <code>get_mins</code>, the matrix-pruning step used by both checks.
+This is the sort of invariant that is invisible until someone breaks it.</p>
+
+<h3>Commit 7 — Interval splitting for overlapping interval patterns</h3>
+<p>The analyses of commits 4–6 assume, in places, that two interval heads in
+a column are either equal or disjoint. Overlapping user code like
+<code>0 .. 10</code> / <code>5 .. 15</code> breaks that. This commit adds
+Maranget's <em>disjointification</em>: cut all the intervals of a column at
+each other's boundaries (<code>0..4, 5..10, 11..15</code> in the example) so
+every original pattern becomes a union of pieces from one shared, disjoint
+set. Read the “Legend and function map” comment first —
+<code>css</code> is the pivotal data structure — then
+<code>insert</code> (which has a warning comment about a real bug the naïve
+recursion had), then <code>split_pss_qs</code>. It is called from
+<code>satisfiable</code> &amp; co. with a one-shot flag so splitting cannot
+recurse forever. This machinery is what makes the union-redundancy warning
+work:</p>
+<pre><code>let union x = match x with 0 .. 10 -> 1 | 11 .. 20 -> 2 | 5 .. 15 -> 3 | _ -> 0</code></pre>
+<pre class="out"><code>Warning 11 [redundant-case]: this match case is unused.   (on 5 .. 15)</code></pre>
+
+<h3>Commit 8 — Interval heads in matcher and can_group</h3>
+<p>First contact with the compiler proper. Two small extensions in
+<code>lambda/matching.ml</code>: <code class="fn">matcher</code> (the row specializer used
+for reachability bookkeeping) learns interval heads — note it treats
+<em>intersecting</em> intervals as “may match”, an over-approximation its
+comment justifies — and <code class="fn">can_group</code> allows intervals to share a
+dispatch group with same-type constants. Innocent-looking; the next commit
+explains why <code>can_group</code> alone would be a trap.</p>
+
+<h3 id="keystone">Commit 9 — Enforce pairwise equal-or-disjoint keys when grouping intervals ★</h3>
+<p>The keystone; read it slowly, diff plus message plus the new comment in
+<code>split_no_or</code>. Recall the invariant from section 3. The subtlety:
+<code>can_group</code> only compares each candidate against the group's
+<em>first</em> head, which suffices when compatibility is transitive
+(e.g. <code>Path.same</code> for extension constructors). Equal-or-disjoint
+is <em>not</em> transitive: <code>200..300</code> and <code>250..350</code>
+are each disjoint from a first head <code>0..100</code>, yet overlap each
+other. So <code>collect</code> now also checks each admitted
+constant/interval key against <em>every key already in the group</em>
+(<code>keys_compatible</code>); a clause whose key overlaps starts a new
+matrix, chained by an exit — first-match-wins by construction, the exact
+mechanism trunk already uses for extension constructors. The check costs
+nothing for interval-free matches (constants only scan the — empty — list
+of interval keys). Section 6 shows what went wrong historically without
+this.</p>
+
+<h3>Commit 10 — Interval code generation in matching.ml</h3>
+<p>Now that any single dispatch only ever sees pairwise disjoint ranges,
+code generation is pleasantly simple:
+<code>divide_constant_interval</code> groups clauses into cells keyed by
+exact bounds, and <code>combine_constant_interval</code> sorts cells by
+lower bound (order is free — disjoint!) and emits, per type and size:</p>
+
+<pre><code>let small x = match x with 0 .. 5 -> 1 | 6 .. 10 -> 2 | _ -> 0
+let wide x = match x with 0 .. 1000 -> 1 | 1001 .. 2000 -> 2 | _ -> 0
+let bsearch (x : int32) = match x with
+  | 0l .. 100l -> 1 | 200l .. 300l -> 2 | 400l .. 500l -> 3 | 600l .. 700l -> 4
+  | _ -> 0</code></pre>
+
+<pre class="out"><code>(* small: jump-table/range machinery via lambda/switch.ml *)
+(catch (if (>= x 6) (if (>= x 11) (exit 2) 2)
+                    (if (>= x 0) 1 (exit 2))) with (2) 0)
+
+(* wide: plain bound checks *)
+(if (&& (<= 0 x) (<= x 1000)) 1
+  (if (&& (<= 1001 x) (<= x 2000)) 2 0))
+
+(* bsearch: binary search on lower bounds, then bound checks *)
+(catch
+  (if (Int32.< x 400l)
+    (if (&& (Int32.<= 0l x) (Int32.<= x 100l)) 1
+      (if (&& (Int32.<= 200l x) (Int32.<= x 300l)) 2 (exit 10)))
+    (if (&& (Int32.<= 400l x) (Int32.<= x 500l)) 3
+      (if (&& (Int32.<= 600l x) (Int32.<= x 700l)) 4 (exit 10))))
+ with (10) 0)</code></pre>
+
+<p>Details to notice in the diff: small <code>int</code> intervals
+(&lt;&nbsp;256 wide) are expanded into individual switch entries and handed
+to <code>call_switcher</code>, which re-compresses them; a defensive check
+fatals if the disjointness invariant were ever violated; in a total match
+the last test of each chain is omitted; char never reaches this code as a
+real interval (only degenerate constants), because typecore still expands
+char ranges.</p>
+
+<h3>Commit 11 — Remove combine_constant's now-dead numeric branches</h3>
+<p>Housekeeping made possible by commit 10's dispatch change: only strings
+and floats still reach the old <code>combine_constant</code>, so its
+int/char/boxed-int branches are deleted. Pure deletion, no behavior
+change — verify by reading the new dispatch in
+<code>do_compile_matching</code>.</p>
+
+<h3>Commits 12–13 — runtime and -dlambda tests</h3>
+<p><code>intermatch.ml</code>: ~50 functions run at test time on bytecode
+and native — boundaries (<code>min_int32</code>…), reversed and signed
+bounds, guards, tuples, records, <code>lazy</code>, nested constructors,
+duplicate keys, and a battery of overlap cases labelled with which rows
+overlap at each probed value (f27–f31, f32–f39). These encode the exact
+shapes of the two historical miscompilations of section 6.
+<code>patmatch_interval.ml</code> freezes the generated Lambda for each
+codegen shape above <em>plus the overlap case</em>, so any future change to
+dispatch is visible in review.</p>
+
+<h3>Commits 14–16 — manual, .mailmap, Changes</h3>
+<p>The reference-manual section (grammar rule, inclusive semantics,
+bounds-must-be-literals, an HTTP status example), and release notes. Note
+the manual documents that a space is currently needed in
+<code>0 .. 10</code> — lifting that is PR&nbsp;#2, a one-commit lexer change
+stacked on top.</p>
+
+<h2 id="overlap">6. The hard part: overlapping intervals (and two real miscompilations)</h2>
+
+<p>If you remember one thing, make it this section. Constants are pairwise
+disjoint; intervals are not. An earlier version of this series grouped
+overlapping intervals into a single dispatch keyed by exact bounds, and was
+wrong twice, silently, on both backends:</p>
+
+<div class="box bug"><strong>Bug 1 — lost fall-through.</strong>
+<pre><code>match x, y with
+| 0 .. 10, true -> 1
+| 5 .. 15, _    -> 2
+| _             -> 4</code></pre>
+<code>(7, false)</code> returned <strong>4</strong> instead of 2: the value
+entered the <code>0..10</code> cell, failed <code>true</code>, and fell to
+the match <em>default</em> — skipping the overlapping <code>5..15</code> row
+entirely. The cell partition had silently discarded the edge “row 2 may also
+match values of row 1's cell”.</div>
+
+<div class="box bug"><strong>Bug 2 — reordered dispatch.</strong> With a
+duplicated key (<code>0..10</code> / <code>5..15</code> / <code>0..10</code>),
+the grouping machinery orders cells by a key's <em>last</em> occurrence, so
+the dispatch tested <code>5..15</code> first and <code>f 7</code> returned 2
+instead of 1.</div>
+
+<div class="box fix"><p><strong>The fix is commit 9</strong>, and its shape is
+the deep lesson of this series: instead of patching the code generator to
+handle overlap (a “slow path” ordered chain — fragile, and historically
+wrong), the series restores the module's own invariant one level up:
+<em>overlapping heads never share a dispatch</em>. Groups are cut at overlap
+boundaries and chained with exits. Look at the compiled overlap case:</p>
+<pre><code>let overlap x y = match x, y with
+  | 0 .. 10, true -> 1
+  | 5 .. 15, _    -> 2
+  | _ -> 0</code></pre>
+<pre class="out"><code>(catch
+   (if (isout 10 x) (exit 14) (if y 1 (exit 14)))
+ with (14)
+   (if (isout 10 (-5+ x)) 0 2))</code></pre>
+<p>Two chained tests: “x in 0..10 and y? → 1, otherwise exit”, and the
+handler tests <code>5..15</code> (as <code>x−5 in 0..10</code>). The
+fall-through edge is the <code>exit 14</code> — first-match-wins is now a
+property of the <em>structure</em>, not of careful ordering.</p></div>
+
+<h2 id="experiments">7. Experiments to try</h2>
+<ol>
+<li>Re-run every capture in this file (sections 2, 4, 5) — then vary them.
+Predict the Lambda before you look.</li>
+<li>Check out commit 3 (<code>Produce Tpat_interval…</code>), build, and
+compile an interval match: watch typing succeed, warnings work, and codegen
+fatal — the mid-series staging made visible.</li>
+<li>Make the exhaustiveness checker sweat:
+<code>match x with -2147483648l .. 0l -> 1 | 1l .. 2147483647l -> 2</code>
+— no warning 8; then poke a one-value hole and watch the counter-example
+name it.</li>
+<li>Trigger the disjointness <code>fatal_error</code> in
+<code>combine_constant_interval</code>? You cannot — try to construct an
+overlap that reaches one dispatch, then read commit 9 to see why you
+failed.</li>
+<li>Diff <code>git show</code> of commit 9 against the extension-constructor
+comment in <code>can_group</code> (trunk code): same disease, same cure.</li>
+<li>Run the feature's own tests:
+<code>make -C testsuite one DIR=tests/basic-more</code> and
+<code>DIR=tests/typing-warnings</code>.</li>
+</ol>
+
+<h2 id="glossary">8. Glossary</h2>
+<table>
+<tr><th>Term</th><th>Meaning</th></tr>
+<tr><td>head</td><td>The outermost constructor of a pattern (<code>Patterns.Head</code>): a constant, an interval, <code>Some</code>, a tuple…</td></tr>
+<tr><td>matrix / pm</td><td>The rows×columns view of a match's clauses; “pm” (pattern matching) is matching.ml's name for a matrix plus its actions.</td></tr>
+<tr><td>specialization</td><td>Restricting a matrix to the rows compatible with a given head, consuming the first column.</td></tr>
+<tr><td>usefulness</td><td>Row q is useful w.r.t. matrix P if some value matches q and no row of P. Exhaustiveness and redundancy are both usefulness questions.</td></tr>
+<tr><td>division / cell</td><td>The compiler's grouping of a matrix's rows by first-column head; each cell becomes one branch of a dispatch.</td></tr>
+<tr><td>static exit</td><td>Lambda's <code>catch … with (exit n) …</code> / <code>(exit n)</code>: a local, zero-cost goto used to chain match sub-matrices.</td></tr>
+<tr><td>default matrix</td><td>Rows still relevant when the scrutinee's head is none of the dispatched ones; compiled as the exit handler.</td></tr>
+<tr><td>disjointification</td><td>Cutting a set of intervals at each other's bounds so any two pieces are equal or disjoint (parmatch's <code>css</code>).</td></tr>
+<tr><td>first-match-wins</td><td>OCaml's guarantee that the textually first matching clause is selected — the property both historical bugs violated.</td></tr>
+</table>
+
+<p class="subtitle" style="margin-top:3rem">Generated for personal study of
+PR&nbsp;#1 on <code>thizanne/ocaml</code>; outputs captured from the real
+compiler at the branch head. Drafted with Claude Code.</p>
+
+</body>
+</html>
