@@ -19,6 +19,8 @@ Working version
 - Interval patterns (`lo .. hi`) now support integer types (int, int32,
   int64, nativeint) in addition to char. They are compiled efficiently
   using jump tables for small intervals and bound checks for large ones.
+  An integer literal immediately followed by ".." is read as an
+  interval bound, so no whitespace is required in "0..10".
   (Mehdi Bouaziz, Luc Maranget, Thibault Suzanne, review by TODO)
 
 ### Runtime system:

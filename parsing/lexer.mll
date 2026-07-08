@@ -557,6 +557,42 @@ rule token = parse
           LIDENT name
       } (* No non-ascii keywords *)
   | int_literal as lit { INT (lit, None) }
+  | (int_literal as lit) ".."
+      (* An integer literal immediately followed by ".." gives the
+         bounds of an interval pattern: lex the integer alone and
+         rewind so that ".." is then read as DOTDOT. Without this
+         rule, [0..1] would lex as the float [0.] followed by [.1]
+         and fail to parse. The rewind idiom is the same as in the
+         "*)" rule below. The two longer-match rules that follow
+         carve out the cases where the historical tokenization must
+         be preserved or is preferable. *)
+      { lexbuf.Lexing.lex_curr_pos <- lexbuf.Lexing.lex_curr_pos - 2;
+        let curpos = lexbuf.lex_curr_p in
+        lexbuf.lex_curr_p <- { curpos with pos_cnum = curpos.pos_cnum - 2 };
+        INT (lit, None) }
+  | (int_literal as lit) ".." dotsymbolchar
+      (* ... except when ".." is followed by an operator character:
+         the second dot then begins a user-defined indexing operator
+         applied to the float literal, as in [0..%(i)] for
+         [(0.).%(i)], which remains typeable. Lex the float and
+         rewind so that the second dot starts the operator, exactly
+         as before. (The builtin [.()], [.[]] and [.{}] forms need no
+         such care: they cannot be redefined, and applying them to a
+         float literal cannot type-check.) *)
+      { lexbuf.Lexing.lex_curr_pos <- lexbuf.Lexing.lex_curr_pos - 2;
+        let curpos = lexbuf.lex_curr_p in
+        lexbuf.lex_curr_p <- { curpos with pos_cnum = curpos.pos_cnum - 2 };
+        FLOAT (lit ^ ".", None) }
+  | (int_literal as lit) ".." (['-' '+'] ['0'-'9'])
+      (* ... but a sign directly followed by a digit is a signed
+         interval bound, [0..-5] is [0 .. -5]: historically this
+         could only be the ill-formed application of a [.-] or [.+]
+         operator without its opening bracket, i.e. a syntax error,
+         so no valid program changes meaning. *)
+      { lexbuf.Lexing.lex_curr_pos <- lexbuf.Lexing.lex_curr_pos - 4;
+        let curpos = lexbuf.lex_curr_p in
+        lexbuf.lex_curr_p <- { curpos with pos_cnum = curpos.pos_cnum - 4 };
+        INT (lit, None) }
   | (int_literal as lit) (literal_modifier as modif)
       { INT (lit, Some modif) }
   | float_literal | hex_float_literal as lit

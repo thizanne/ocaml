@@ -789,6 +789,69 @@ test "lazy 2" f48 (lazy 11) 2;
 ()
 ;;
 
+(* Unspaced bounds: an integer literal immediately followed by ".."
+   lexes as an interval bound, not as a float literal *)
+
+let f49 x = match x with
+  | 0..10 -> 1
+  | 0x10..0x20 -> 2
+  | 1_000..2_000 -> 3
+  | _ -> 0
+;;
+
+test "unspaced 1" f49 5 1;
+test "unspaced 2" f49 0x18 2;
+test "unspaced 3" f49 1_500 3;
+test "unspaced 4" f49 100 0;
+()
+;;
+
+(* Unspaced signed bounds: a sign directly followed by a digit after
+   ".." is an interval bound *)
+
+let f50 x = match x with
+  | 0..-5 -> 1
+  | 1..+5 -> 2
+  | _ -> 0
+;;
+
+test "signed unspaced 1" f50 (-3) 1;
+test "signed unspaced 2" f50 0 1;
+test "signed unspaced 3" f50 3 2;
+test "signed unspaced 4" f50 6 0;
+()
+;;
+
+(* Non-regression: a dot-operator applied to an unspaced float
+   literal keeps its historical meaning, [2..%(i)] is [(2.).%(i)] *)
+
+let ( .%() ) (x : float) (i : int) = x +. float_of_int i
+
+let f51 i = 2..%(i)
+;;
+
+test "float dotop paren" f51 3 5.0;
+()
+;;
+
+let ( .%[] ) (x : float) (i : int) = x *. float_of_int i
+
+let f52 i = 2..%[i]
+;;
+
+test "float dotop bracket" f52 3 6.0;
+()
+;;
+
+let f53 i =
+  let ( .-() ) (x : float) (n : int) = x -. float_of_int n in
+  2..-(i)
+;;
+
+test "float dotop minus" f53 3 (-1.0);
+()
+;;
+
 (* TEST
  include testing;
 *)
