@@ -13,12 +13,101 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* Compilation of pattern matching
-
+(* Compilation of pattern matching.
    Based upon Lefessant-Maranget ``Optimizing Pattern-Matching'' ICFP'2001.
 
    A previous version was based on Peyton-Jones, ``The Implementation of
    functional programming languages'', chapter 5.
+
+
+   Pattern matching in the compiler: the pipeline
+   ==============================================
+
+   This section is an overview of how pattern matching is handled
+   across the compiler, from parsing to code generation; the headers
+   of typing/typecore.ml, typing/parmatch.ml and typing/patterns.mli
+   point here.
+
+     parser.mly --> typecore.ml --> parmatch.ml --> translcore.ml --> this file
+     (Parsetree)    (Typedtree)     (warnings)      (elaboration)     (Lambda)
+
+   Parsing. Patterns enter the compiler as the Parsetree.Ppat_* nodes
+   built by parsing/parser.mly: constants, constructors, or-patterns
+   (Ppat_or), aliases (Ppat_alias), etc. Character ranges such as
+   'a'..'z' are parsed as Ppat_interval; only character bounds survive
+   type checking, which expands the range into an or-pattern
+   enumerating every character in between.
+
+   Type checking. Typecore.type_pat (recursive worker: type_pat_aux)
+   checks a parsetree pattern against an expected type and returns a
+   typedtree pattern carrying its type and environment. The typedtree
+   distinguishes ``value'' patterns, which match values, from
+   ``computation'' patterns, which also match the effect of a
+   computation (Tpat_value, Tpat_exception); type_pat receives the
+   expected category as a GADT tag (see the comment above
+   Typecore.pure). Typedtree.split_pattern then separates a
+   computation pattern into its value and exception parts, so that the
+   two halves of a match are checked and compiled separately.
+
+   Warnings. Typecore.type_cases runs the match analyses of
+   typing/parmatch.ml through Parmatch.check_partial and check_unused:
+   exhaustiveness is computed on the value clauses, redundancy on
+   value and exception clauses separately. The algorithms follow
+   Maranget, ``Warnings for pattern matching'' (JFP 17(3), 2007). The
+   central notion is the usefulness of a row with respect to a matrix
+   (satisfiable, every_satisfiables): exhaustiveness is usefulness of
+   a wildcard row (exhaust), and a clause is redundant when it is not
+   useful with respect to the previous unguarded ones (le_pat and
+   get_mins prune the matrix). Counter-examples are built by
+   full_match and build_other, and -- as they may be ill-typed in the
+   presence of GADTs -- refined by Typecore.check_counter_example_pat
+   (see the comment around counter_example_checking_info). The
+   resulting Partial/Total verdict is stored in the typedtree and
+   reused here.
+
+   Pattern views. The analyses and this module do not consume raw
+   typedtree patterns, whose head can be a variable, an alias or an
+   or-pattern as well as an actual shape: if every pattern match over
+   patterns handled those three administrative cases itself,
+   forgetting one would be a silent bug. typing/patterns.ml instead
+   encodes in the type what may appear at a pattern's head. General
+   re-expresses the typedtree as a polymorphic variant; Half_simple
+   (General.strip_vars) guarantees that no variable or alias remains
+   at the head, turning them into bindings on the clause's action;
+   Simple further excludes or-patterns at the head, which the
+   precompilation pass of this module splits into separate rows. The
+   constraint bears on the head only: sub-patterns are arbitrary, so
+   Some (1 | 2) is simple while (1 | 2) is only half-simple. Finally,
+   the Head module isolates the head constructor alone:
+   Head.deconstruct returns a pattern's head and its immediate
+   sub-patterns, and Head.arity the number of those (a constant has
+   arity 0, Some has arity 1, a tuple its width) -- the currency of
+   matrix specialization throughout the analyses and this module.
+
+   Elaboration. lambda/translcore.ml invokes this module through one
+   entry point per elaboration site (see matching.mli): for_function,
+   for_let, for_multiple_match, for_trywith, for_handler,
+   for_tupled_function, for_optional_arg_default. Translcore also
+   compiles ``when'' guards (transl_guard) to
+   Lifthenelse (cond, body, staticfail); compile_match uses
+   patch_guarded to plug the rest of the match in place of the
+   staticfail placeholder.
+
+   Code generation. This module compiles matches to Lambda following
+   the scheme described in the next section. Columns of integer-like
+   constants (ints, chars, constructor and variant tags) are
+   dispatched through call_switcher and lambda/switch.ml, which
+   compiles a generic switch into a mixture of if-tests and jump
+   tables. The Context, Default_environment and Jumps modules below
+   track, per program point, the values that can reach it and the
+   live exits; the row specializer matcher deliberately
+   over-approximates ``may match''. Finally, the Partial/Total
+   verdict from typing drives failure handling (toplevel_handler,
+   failure_handler): a Partial match is wrapped in a static catch
+   whose handler raises Match_failure (or re-raises, for try...with);
+   if typing said Total but compilation degrades to Partial, warning
+   Degraded_to_partial_match is emitted, and -safer-matching
+   (Clflags.safer_matching) forces Partial everywhere.
 
 
    Overview of the implementation
@@ -412,6 +501,14 @@ let rec rev_split_at n ps =
 
 exception NoMatch
 
+(* [matcher discr p rem] specializes the row [p :: rem] under the
+   assumption that the matched value has head [discr]: it returns the
+   sub-patterns of [p] prepended to [rem] ([Head.arity discr] omegas
+   when [p] is a wildcard), or raises [NoMatch] if no value matching
+   [discr] can also match [p]. Used by [Context.specialize] and
+   [Default_environment.specialize] to compute jump summaries, so it
+   must over-approximate "may match": e.g. two extension constructors
+   are kept compatible whenever rebinding may make them equal. *)
 let matcher discr (p : Simple.pattern) rem =
   let discr = expand_record_head discr in
   let p = expand_record_simple p in
@@ -1388,6 +1485,14 @@ let pm_free_variables { cases } =
 
 (* Basic grouping predicates *)
 
+(* [can_group discr pat] decides whether the head of [pat] may be
+   grouped in the same pm as [discr] by [split_no_or]: any two heads
+   admitted into a group must be syntactically decidably equal or
+   incompatible. In particular two extension constructors are only
+   grouped if their paths are equal ([Path.same]), as distinct paths
+   may denote the same constructor through rebinding. Note that each
+   candidate is compared with the group's first head [discr] only, so
+   the admission criterion must be transitive. *)
 let can_group discr pat =
   let open Patterns.Head in
   match (discr.pat_desc, (Simple.head pat).pat_desc) with
@@ -1627,7 +1732,13 @@ and split_no_or cls args def k =
      There is some subtlety regarding the handling of extension constructors
      (where it is not always possible to syntactically decide whether two
      different heads match different values), but this is handled by the
-     [can_group] function. *)
+     [can_group] function.
+
+     [collect] admits a clause into the current group when [can_group]
+     accepts its head against the group discriminator [group_discr] and
+     [safe_before] allows it to commute with the already-rejected
+     clauses; the rejected clauses form the next pm, reached through an
+     exit added to the default environment. *)
   let rec split (cls : Simple.clause list) =
     let discr = what_is_first_case cls in
     collect discr [] [] cls
@@ -1944,6 +2055,10 @@ type 'a division = {
   cells : ('a * cell) list
 }
 
+(* [add_in_div make_matching_fun eq_key key patl_action division] adds
+   the row [patl_action] to the cell of [division] whose key is
+   [eq_key]-equal to [key], creating the cell (prepended to
+   [division.cells]) if no such cell exists yet. *)
 let add_in_div make_matching_fun eq_key key patl_action division =
   let cells =
     match List.find_opt (fun (k, _) -> eq_key key k) division.cells with
@@ -1957,6 +2072,14 @@ let add_in_div make_matching_fun eq_key key patl_action division =
   in
   { division with cells }
 
+(* [divide] groups the clauses of [pm] into cells, one per distinct
+   head key (modulo [eq_key]), each holding the specialized rows whose
+   head has that key. As [List.fold_right] processes clauses bottom-up
+   and fresh keys are prepended, [cells] orders keys by their *last*
+   source occurrence (not the first); within a cell, actions are in
+   source order. The relative order of cells is thus unspecified for
+   callers; this is sound as they either sort the resulting actions, or
+   have pairwise-disjoint keys per the [split_no_or] invariant. *)
 let divide get_expr_args eq_key get_key get_pat_args ctx
     (pm : (split_args, Simple.clause) pattern_matching) =
   let add ((p, patl), action) division =
@@ -3101,6 +3224,12 @@ let mk_failaction_pos arg_partial seen ctx defs =
     (None, fails, jumps)
   )
 
+(* [combine_constant] assembles the dispatch code for a column of
+   constants, which the division invariant guarantees to be pairwise
+   distinct (hence disjoint): an integer switch for [Const_int] and
+   [Const_char], a string switch for [Const_string], and comparison
+   test sequences for floats and boxed integers. Disjointness allows
+   reordering the cases freely; every strategy sorts them. *)
 let combine_constant loc arg cst partial ctx def
     (const_lambda_list, total, _pats) =
   let fail, local_jumps = mk_failaction_neg partial ctx def in
@@ -3943,6 +4072,9 @@ and do_compile_matching ~scopes repr partial ctx pmh =
             (divide_record ~scopes lbl.lbl_all ph)
             Context.combine
       | Constant cst ->
+          (* Routes all constant heads: int, char, string, float,
+             int32, int64, nativeint. [cst] is only a representative
+             used to select the strategy in [combine_constant]. *)
           compile_test
             divide_constant
             (combine_constant ploc arg cst arg_partial)
@@ -4280,6 +4412,9 @@ let flatten_pattern size p =
   | Tpat_any -> Patterns.omegas size
   | _ -> raise Cannot_flatten
 
+(* Flatten a tuple pattern (or a wildcard) of arity [size] into the
+   list of its sub-patterns; only called from [do_for_multiple_match],
+   where typing guarantees no other head can occur. *)
 let flatten_simple_pattern size (p : Simple.pattern) =
   match p.pat_desc with
   | `Tuple args -> (List.map snd args)

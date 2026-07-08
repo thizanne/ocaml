@@ -13,7 +13,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* Detection of partial matches and unused match cases. *)
+(* Detection of partial matches and unused match cases.
+   See the toplevel comment of lambda/matching.ml for an overview of
+   how pattern matching is type-checked, analysed and compiled. *)
 
 open Misc
 open Asttypes
@@ -134,7 +136,9 @@ let extra_pat =
 (* Given the first column of a simplified matrix, this function first looks for
    a "discriminating" pattern on that column (i.e. a non-omega one) and then
    check that every other head pattern in the column is coherent with that one.
-*)
+   Coherence is the loose, head-only "same type" approximation discussed
+   above: same constant kind, same constructor counts, same arity, etc.
+   An all-omega column is trivially coherent. *)
 let all_coherent column =
   let open Patterns.Head in
   let coherent_heads hp1 hp2 =
@@ -257,6 +261,14 @@ let is_absent_pat d =
   | Patterns.Head.Variant { tag; cstr_row; _ } -> is_absent tag cstr_row
   | _ -> false
 
+(* Total order on constants, used throughout this module to compare
+   constant patterns (compatibility, head matching, subsumption).
+   Floats are compared as numbers, i.e. by the value denoted by their
+   source string; strings by contents (ignoring location and delimiter
+   information); all other constants, and constants of distinct kinds,
+   fall back to [Stdlib.compare]. In a well-typed matrix a column only
+   holds constants of a single kind, so the cross-kind fallback should
+   not be relied upon. *)
 let const_compare x y =
   match x,y with
   | Const_float f1, Const_float f2 ->
@@ -289,6 +301,13 @@ let records_args l1 l2 =
 
 
 
+(* [compat p q] (below) holds when some value may match both [p] and
+   [q]. The functor is parametrized by constructor equality, which
+   determines how (possibly rebound) extension constructors are
+   compared; see the discussion above. Compatibility makes clause
+   reordering and or-pattern splitting safe: [check_unused] keeps only
+   the previous rows compatible with [q], and [every_both] adds [q1] to
+   the matrix when checking [q2] only if [compat q1 q2]. *)
 module Compat
     (Constr:sig
       val equal :
@@ -380,7 +399,14 @@ let get_constructor_type_path ty tenv =
 (* Utilities for matching   *)
 (****************************)
 
-(* Check top matching *)
+(* Check top matching:
+   [simple_match d h] holds when a row with head [h] belongs in the
+   submatrix specialized by the discriminating head [d]: either [h] is
+   a wildcard (Any), or it carries the same head constructor as [d]
+   (constants are compared with [const_compare]; arrays must agree on
+   mutability and length; record heads always agree, field alignment
+   being done later by [simple_match_args]). Not symmetric: [d] comes
+   from [discr_pat] and is matched against arbitrary row heads. *)
 let simple_match d h =
   let open Patterns.Head in
   match d.pat_desc, h.pat_desc with
@@ -415,7 +441,12 @@ let extract_fields lbls arg =
   in
   List.map (fun lbl -> get_field lbl.lbl_pos arg) lbls
 
-(* Build argument list when p2 >= p1, where p1 is a simple pattern *)
+(* Build argument list when p2 >= p1, where p1 is a simple pattern.
+   [simple_match_args discr head args] returns the sub-patterns to
+   prepend to a row when specializing it by [discr]: the row's own
+   arguments [args] for most heads; for records, the fields of [discr]
+   (omega for the ones [head] does not match); fresh omegas of the
+   right arity when [head] is a wildcard; [] for constants. *)
 let simple_match_args discr head args =
   let open Patterns.Head in
   match head.pat_desc with
@@ -514,6 +545,11 @@ let rec read_args xs r = match xs,r with
 | _,_ ->
     fatal_error "Parmatch.read_args"
 
+(* [set_args q r] replaces the (omega) arguments of the constructed
+   pattern [q] with the appropriate prefix of [r] and conses the
+   rebuilt pattern onto the rest of [r]. This undoes specialization
+   and is used to reconstruct witness rows. Constants and omega take
+   no arguments and are consed as is. *)
 let set_args q r = match q with
 | {pat_desc = Tpat_tuple lbls_omegas} ->
     let lbls, omegas = List.split lbls_omegas in
@@ -758,7 +794,17 @@ let close_variant env row =
 (*
   Check whether the first column of env makes up a complete signature or
   not. We work on the discriminating pattern heads of each sub-matrix: they
-  are not omega/Any.
+  are not omega/Any. They are also pairwise distinct, so counting them
+  is meaningful. Per head kind:
+  - non-extension constructors: complete when all the constructors of
+    the variant type are present; extension constructors never are;
+  - polymorphic variants: row-based check; [closing] selects a stricter
+    mode that considers the variant as closed (fixed rows excepted);
+  - characters: complete when all 256 characters appear;
+  - all other constants (int, int32, int64, nativeint, string, float)
+    and arrays are never complete: a finite set of equality patterns
+    cannot exhaust them;
+  - tuples, records and lazy always are (single constructor).
 *)
 let full_match closing env =  match env with
 | [] -> false
@@ -804,6 +850,11 @@ let full_match closing env =  match env with
 
 (* Written as a non-fragile matching, PR#7451 originated from a fragile matching
    below. *)
+(* [should_extend ext env]: during fragility checking, [ext] is the
+   path of a type considered as extended with an extra constructor.
+   Returns true when the heads of [env] are ordinary (non-extension)
+   constructors of exactly that type, in which case their signature
+   must not be considered complete. *)
 let should_extend ext env = match ext with
 | None -> false
 | Some ext -> begin match env with
@@ -826,6 +877,11 @@ let pat_of_constr ex_pat cstr =
    Tpat_construct (mknoloc (Longident.Lident cstr.cstr_name),
                    cstr, omegas cstr.cstr_arity, None)}
 
+(* [orify x y] builds the or-pattern (x|y) with [x]'s type and
+   environment; [orify_many [p1; ...; pn]] right-nests the patterns
+   into (p1 | (p2 | ...)). The list must be non-empty. Used to
+   assemble or-pattern witnesses, e.g. in [pat_of_constrs] and
+   [check_unused]. *)
 let orify x y = make_pat (Tpat_or (x, y, None)) x.pat_type x.pat_env
 
 let rec orify_many = function
@@ -909,7 +965,10 @@ let build_other_constrs env p =
         pat_of_constrs p (complete_constrs constr used_constrs)
   | _ -> extra_pat
 
-(* Auxiliary for build_other *)
+(* Auxiliary for build_other.
+   Enumerates the constants [first], [next first], ... until one is
+   found whose projection does not appear in the first column of [env]
+   (always terminates since [env] is finite). *)
 
 let build_other_constant proj make first next p env =
   let all = List.map (fun (p, _) -> proj p.pat_desc) env in
@@ -922,6 +981,18 @@ let build_other_constant proj make first next p env =
 (*
   Builds a pattern that is incompatible with all patterns in
   the first column of env
+  Strategy per head kind:
+  - constructors: or-pattern of the missing constructors, through
+    [build_other_constrs] ([extra_pat] for extension constructors or
+    when the type is the one being checked for fragility);
+  - variants: or-pattern of the missing tags, or a fresh tag;
+  - char: scan ['a'-'z'], ['A'-'Z'], ['0'-'9'], [' '-'~'] and finally
+    [0-255] for a character not matched in env;
+  - int/int32/int64/nativeint: smallest value >= 0 not matched;
+  - float: first of 0.0, 1.0, 2.0, ... whose value is not matched;
+  - string: "*...*" of the smallest length not matched;
+  - arrays: array of the smallest length not matched;
+  - omega otherwise.
 *)
 
 let some_private_tag = "<some private tag>"
@@ -1064,6 +1135,9 @@ let build_other ext env =
           try_arrays 0
       | _ -> Patterns.omega
 
+(* Whether at least one value matches the pattern (resp. every pattern
+   of the vector). Only absent polymorphic-variant tags make a pattern
+   instance-less. *)
 let rec has_instance p = match p.pat_desc with
   | Tpat_variant (l,_,r) when is_absent l r -> false
   | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_) -> true
@@ -1102,6 +1176,16 @@ and has_instances = function
    - if we end up returning [true] then we're saying that [qs] is useful while
    it is not. This is sad but not the end of the world, we're just allowing dead
    code to survive.
+
+   ---
+
+   When the head of [qs] is a wildcard, the matrix is split with
+   [build_specialized_submatrices]. If the first-column heads do not
+   form a complete signature, it is enough to check the default matrix:
+   a witness may use a head constructor matched by no row. Otherwise the
+   wildcard must be satisfiable w.r.t. at least one of the specialized
+   submatrices. All rows of [pss] are assumed to have the same length
+   as [qs].
 *)
 let rec satisfiable pss qs = match pss with
 | [] -> has_instances qs
@@ -1408,6 +1492,9 @@ let exhaust ext pss n =
    When this is false for the matrix minus the current column, and the
    current column is composed of variant tags, we close the variant
    (even if it doesn't help in making the matching exhaustive).
+
+   [tdefs] is [Some env] at the top; internal calls that are used as
+   plain exhaustiveness tests pass [None], which disables closing.
 *)
 
 let rec pressure_variants tdefs = function
@@ -1600,6 +1687,12 @@ let extract_columns pss qs = match pss with
 (* Core function
    The idea is to first look for or patterns (recursive case), then
    check or-patterns argument usefulness (terminal case)
+
+   Unlike [satisfiable], which yields a single boolean, the result
+   distinguishes [Used], [Unused] and [Upartial ps] where [ps] lists
+   the or-pattern alternatives of [qs] that can never match (reported
+   as Redundant_subpat by [check_unused]). Ghost or-patterns, i.e.
+   compiler-generated ones, are not expanded.
 *)
 
 let rec every_satisfiables pss qs = match qs.active with
@@ -1700,7 +1793,12 @@ and every_both pss qs q1 q2 =
 
 
 
-(* le_pat p q  means, forall V,  V matches q implies V matches p *)
+(* le_pat p q  means, forall V,  V matches q implies V matches p
+   (subsumption). Mostly syntactic, with a fall-back on a
+   [satisfiable] test for the remaining cases. [get_mins le_pats]
+   relies on [le_pat] being a sound subsumption test: [check_partial]
+   and [check_unused] drop subsumed rows, which must not change the
+   set of values matched by the matrix. *)
 let rec le_pat p q =
   match (p.pat_desc, q.pat_desc) with
   | (Tpat_var _|Tpat_any),_ -> true
@@ -1753,6 +1851,11 @@ let get_mins le ps =
 (*
   lub p q is a pattern that matches all values matched by p and q
   may raise Empty, when p and q are not compatible
+
+  That is, lub computes the largest common instance: it matches
+  exactly the values matched by both p and q. Constants must be equal
+  up to [const_compare]; or-patterns are distributed pointwise,
+  dropping incompatible alternatives.
 *)
 
 let rec lub p q = match p.pat_desc,q.pat_desc with
@@ -1954,6 +2057,10 @@ let extendable_path path =
     Path.same path Predef.path_unit ||
     Path.same path Predef.path_option)
 
+(* Accumulate in [r], without duplicates, the type paths of the
+   datatypes whose ordinary (non-extension) constructors are matched
+   in [p], skipping the non-extendable predefined types (bool, list,
+   unit, option). Used by [do_check_fragile] below. *)
 let rec collect_paths_from_pat r p = match p.pat_desc with
 | Tpat_construct(_, {cstr_tag=(Cstr_constant _|Cstr_block _|Cstr_unboxed)},
                  ps, _) ->
@@ -2086,6 +2193,11 @@ let check_unused pred casel =
 
 let irrefutable pat = le_pat pat omega
 
+(* See the .mli: matching against an inactive pattern can be
+   duplicated, erased or delayed without changing the observable
+   behavior of the program. A partial match can fail, hence is always
+   active; lazy patterns (forcing), mutable array patterns and mutable
+   record fields (reads of mutable state) are active too. *)
 let inactive ~partial pat =
   match partial with
   | Partial -> false

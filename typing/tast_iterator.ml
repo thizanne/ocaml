@@ -262,6 +262,8 @@ let pat_extra sub (e, loc, attrs) =
   | Tpat_open (_, lid, env) -> iter_loc_lid sub lid; sub.env sub env
   | Tpat_constraint ct -> sub.typ sub ct
 
+(* Default iterator on pattern_desc; Tpat_any and Tpat_constant are
+   no-ops. *)
 let pat
   : type k . iterator -> k general_pattern -> unit
   = fun sub {pat_loc; pat_extra=extra; pat_desc; pat_env; pat_attributes; _} ->

@@ -53,6 +53,7 @@ let rec is_underscore v =
   | _ -> false
 and is_field_underscore (_,_,v) = is_underscore v
 
+(* Print a pattern in source-like syntax (pat_extra wrappers first). *)
 let rec pretty_val : type k . _ -> k general_pattern -> _ = fun ppf v ->
   match v.pat_extra with
     | extra :: rem ->

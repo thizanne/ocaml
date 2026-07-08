@@ -81,3 +81,10 @@ link:../testsuite/tests/typing-recovery/[typing-recovery]
 directory. Adding new features to the type checker may change the
 recovery cases so it makes sense to add tests (using the
 `-typing-recovery` flag) for `Typecore` or `Typemod` errors.
+
+Pattern matching::
+The toplevel comment of link:../lambda/matching.ml[Matching] gives an
+overview of how pattern matching is handled across the compiler: type
+checking (link:typecore.ml[Typecore]), exhaustiveness and redundancy
+analysis (link:parmatch.ml[Parmatch]) and compilation to the Lambda
+IR (link:../lambda/matching.ml[Matching] itself).

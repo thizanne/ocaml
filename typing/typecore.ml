@@ -13,7 +13,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* Typechecking for the core language *)
+(* Typechecking for the core language.
+   See the toplevel comment of lambda/matching.ml for an overview of
+   how pattern matching is type-checked, analysed and compiled. *)
 
 [@@@ocaml.warning "-60"] module Str = Ast_helper.Str (* For ocamldep *)
 [@@@ocaml.warning "+60"]
@@ -556,6 +558,9 @@ let constant_desc
 
 let constant const = constant_desc const.pconst_desc
 
+(* Convert a Parsetree constant into a Typedtree constant.
+   Ill-formed literals (overflow, unknown suffix) are reported through
+   [Error.log_and_raise] at [loc]. *)
 let constant_or_raise env loc cst =
   match constant cst with
   | Ok c -> c
@@ -1059,6 +1064,11 @@ and build_as_type_extra_inner env p ty rest =
       unify_pat_types p.pat_loc env (instance as_ty) ty1;
       ty2
 
+(* Core of [build_as_type]: compute the type of a variable bound by
+   an [as] alias over [p]. The result may be more general than
+   [p.pat_type] (e.g. open variant rows, fresh instances of
+   non-private constructors), so that the alias does not needlessly
+   constrain the matched value. *)
 and build_as_type_aux (env : Env.t) p =
   match p.pat_desc with
     Tpat_alias(p1,_, _, _, _) -> build_as_type env p1
@@ -2203,6 +2213,14 @@ and type_pat_aux
         pat_attributes = sp.ppat_attributes;
         pat_env = !!penv }
   | Ppat_interval (c1, c2) ->
+      (* Interval patterns are only accepted between character
+         literals; any other bound raises [Invalid_interval] at that
+         bound's location. The interval is expanded into an or-pattern
+         enumerating every character between the bounds (inclusive;
+         the bounds are swapped if [c1 > c2], so 'z'..'a' is the same
+         as 'a'..'z'). The generated sub-patterns carry ghost
+         locations; the resulting pattern keeps the original location
+         and is then type-checked as an ordinary pattern. *)
       let open Ast_helper in
       let get_bound = function
         | {pconst_desc = Pconst_char c; _} -> c
@@ -2832,6 +2850,9 @@ let enter_nonsplit_or info =
       Refine_or {inside_nonsplit_or = true}
   in { info with splitting_mode }
 
+(* Refine a counter-example candidate produced by Parmatch into a
+   well-typed pattern matching at least one value; see the
+   documentation above [counter_example_checking_info]. *)
 let rec check_counter_example_pat
     ~info ~(penv : Pattern_env.t) type_pat_state tp expected_ty k =
   assert (penv.in_counterexample = true);

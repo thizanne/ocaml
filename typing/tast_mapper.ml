@@ -299,6 +299,8 @@ let pat_extra sub = function
       Tpat_open (path, map_loc_lid sub lid, sub.env sub env)
   | Tpat_constraint ct -> Tpat_constraint (sub.typ sub ct)
 
+(* Default mapper on pattern_desc; Tpat_any and Tpat_constant are
+   returned unchanged. *)
 let pat
   : type k . mapper -> k general_pattern -> k general_pattern
   = fun sub x ->

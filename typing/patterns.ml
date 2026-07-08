@@ -49,6 +49,9 @@ end
    that allow to restrict the set of pattern constructors
    statically allowed at a particular place *)
 
+(* A "simple" pattern has a structural constructor or a wildcard at
+   its head: or-patterns, variable and alias patterns may not occur
+   at the head (sub-patterns are arbitrary typedtree patterns). *)
 module Simple = struct
   type view = [
     | `Any
@@ -85,6 +88,8 @@ module General = struct
   ]
   type pattern = view pattern_data
 
+  (* [view_desc] embeds a typedtree pattern description into the
+     [view] variant; it is total, every pattern has a view. *)
   let view_desc = function
     | Tpat_any ->
        `Any
@@ -109,6 +114,8 @@ module General = struct
   let view p : pattern =
     { p with pat_desc = view_desc p.pat_desc }
 
+  (* [erase_desc] undoes [view_desc], except that the existential
+     type binders of [Tpat_construct] are forgotten (set to [None]). *)
   let erase_desc = function
     | `Any -> Tpat_any
     | `Var (id, str, uid) -> Tpat_var (id, str, uid)
@@ -153,6 +160,9 @@ module Head : sig
 
   type t = desc pattern_data
 
+  (** [arity t] is the number of immediate sub-patterns of a pattern
+      with head [t]: [deconstruct p = (head, args)] implies
+      [List.length args = arity head]. *)
   val arity : t -> int
 
   (** [deconstruct p] returns the head of [p] and the list of sub patterns. *)

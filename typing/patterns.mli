@@ -14,6 +14,10 @@
 (*                                                                        *)
 (**************************************************************************)
 
+(* Pattern views shared by the pattern-matching analyses; see the
+   toplevel comment of lambda/matching.ml for an overview of the
+   pattern-matching pipeline. *)
+
 open Asttypes
 open Typedtree
 open Types
@@ -37,6 +41,9 @@ module Non_empty_row : sig
   val map_first : ('a -> 'b) -> 'a t -> 'b t
 end
 
+(** A "simple" pattern has a structural constructor or a wildcard at
+    its head: or-patterns, variable and alias patterns may not occur
+    at the head (sub-patterns are arbitrary typedtree patterns). *)
 module Simple : sig
   type view = [
     | `Any
@@ -71,12 +78,17 @@ module General : sig
   ]
   type pattern = view pattern_data
 
+  (** [view] is total: every typedtree pattern has a view.
+      [erase] undoes [view], except that it forgets the existential
+      type binders of [Tpat_construct] (set to [None]). *)
   val view : Typedtree.pattern -> pattern
   val erase : [< view ] pattern_data -> Typedtree.pattern
 
   val strip_vars : pattern -> Half_simple.pattern
 end
 
+(** The head of a pattern: its outermost constructor, carrying enough
+    information to compute its arity, but no sub-patterns. *)
 module Head : sig
   type desc =
     | Any
@@ -95,6 +107,9 @@ module Head : sig
 
   type t = desc pattern_data
 
+  (** [arity t] is the number of immediate sub-patterns of a pattern
+      with head [t]: [deconstruct p = (head, args)] implies
+      [List.length args = arity head]. *)
   val arity : t -> int
 
   (** [deconstruct p] returns the head of [p] and the list of sub patterns.*)
