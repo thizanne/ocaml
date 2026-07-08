@@ -146,7 +146,8 @@ let all_coherent column =
     | Construct c, Construct c' ->
       c.cstr_consts = c'.cstr_consts
       && c.cstr_nonconsts = c'.cstr_nonconsts
-    | Constant c1, Constant c2 -> begin
+    | (Constant c1 | Interval (c1, _)),
+      (Constant c2 | Interval (c2, _)) -> begin
         match c1, c2 with
         | Const_char _, Const_char _
         | Const_int _, Const_int _
@@ -284,6 +285,90 @@ let const_compare x y =
     |Const_nativeint _
     ), _ -> Stdlib.compare x y
 
+(* Integer interval patterns: analysis overview.
+
+   Interval patterns [lo .. hi] over int, int32, int64 and nativeint
+   reach this module as [Tpat_interval (lo, hi)] heads (cf.
+   [Typedtree.Tpat_interval]: the type checker normalizes bounds so
+   that [lo < hi], collapses [lo = hi] to [Tpat_constant], and still
+   expands char intervals to or-patterns). For the analyses here a
+   constant [c] behaves as the degenerate interval [c, c].
+
+   Exhaustiveness treats a column of constants and intervals as a set
+   of closed integer ranges: [full_match] sorts them by lower bound
+   and checks contiguous coverage of the whole type, and [build_other]
+   derives a counter-example from the first gap. Compatibility
+   ([compat], [simple_match]), subsumption ([le_pat]) and intersection
+   ([lub]) compare ranges using the helpers below. *)
+
+(* Interval arithmetic helpers.
+
+   [next_constant c] and [prev_constant c] return the successor/predecessor
+   of [c] in its type, or [None] at type boundaries (e.g. max_int, '\255').
+   Returning [None] prevents arithmetic overflow.
+
+   [inside c1 c2 d]       = d in [c1, c2]  (closed interval)
+   [intersects c1 c2 c3 c4] = [c1,c2] /\ [c3,c4] <> {}
+     Correctness: case-split on which interval starts first;
+     if c3 <= c1 then overlap iff c1 <= c4, else overlap iff c3 <= c2. *)
+
+let next_constant = function
+  | Const_char c ->
+      if c = '\255' then None
+      else Some (Const_char (Char.chr (Char.code c + 1)))
+  | Const_int i ->
+      if i = max_int then None else Some (Const_int (i + 1))
+  | Const_int32 i ->
+      if i = Int32.max_int then None else Some (Const_int32 (Int32.succ i))
+  | Const_int64 i ->
+      if i = Int64.max_int then None else Some (Const_int64 (Int64.succ i))
+  | Const_nativeint i ->
+      if i = Nativeint.max_int then None
+      else Some (Const_nativeint (Nativeint.succ i))
+  | Const_string _ | Const_float _ ->
+      Misc.fatal_error "Parmatch.next_constant"
+
+let prev_constant = function
+  | Const_char c ->
+      if c = '\000' then None
+      else Some (Const_char (Char.chr (Char.code c - 1)))
+  | Const_int i ->
+      if i = min_int then None else Some (Const_int (i - 1))
+  | Const_int32 i ->
+      if i = Int32.min_int then None else Some (Const_int32 (Int32.pred i))
+  | Const_int64 i ->
+      if i = Int64.min_int then None else Some (Const_int64 (Int64.pred i))
+  | Const_nativeint i ->
+      if i = Nativeint.min_int then None
+      else Some (Const_nativeint (Nativeint.pred i))
+  | Const_string _ | Const_float _ ->
+      Misc.fatal_error "Parmatch.prev_constant"
+
+let is_least_constant c = Option.is_none (prev_constant c)
+
+let const_min c1 c2 = if const_compare c1 c2 <= 0 then c1 else c2
+let const_max c1 c2 = if const_compare c1 c2 >= 0 then c1 else c2
+
+(* The (lo, hi) bounds of each constant or interval head of [env],
+   sorted by lower bound. The heads must be constants or intervals. *)
+let sorted_intervals_of_env env =
+  let open Patterns.Head in
+  let extract_interval (d, _) =
+    match d.pat_desc with
+    | Constant c -> (c, c)
+    | Interval (c1, c2) -> (c1, c2)
+    | _ -> assert false
+  in
+  List.map extract_interval env
+  |> List.sort (fun (l1, _) (l2, _) -> const_compare l1 l2)
+
+let inside c1 c2 d =
+  const_compare c1 d <= 0 && const_compare d c2 <= 0
+
+let intersects c1 c2 c3 c4 =
+  if const_compare c3 c1 <= 0 then const_compare c1 c4 <= 0
+  else const_compare c3 c2 <= 0
+
 let records_args l1 l2 =
   (* Invariant: fields are already sorted by Typecore.type_label_a_list *)
   let rec combine r1 r2 l1 l2 = match l1,l2 with
@@ -335,6 +420,11 @@ module Compat
       l1=l2 && ocompat op1 op2
   | Tpat_constant c1, Tpat_constant c2 ->
       const_compare c1 c2 = 0
+  | Tpat_constant c, Tpat_interval (c1, c2)
+  | Tpat_interval (c1, c2), Tpat_constant c ->
+      inside c1 c2 c
+  | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+      intersects c1 c2 c3 c4
   | Tpat_tuple labeled_ps, Tpat_tuple labeled_qs ->
       tuple_compat labeled_ps labeled_qs
   | Tpat_lazy p, Tpat_lazy q -> compat p q
@@ -415,6 +505,11 @@ let simple_match d h =
   | Variant { tag = t1; _ }, Variant { tag = t2 } ->
       t1 = t2
   | Constant c1, Constant c2 -> const_compare c1 c2 = 0
+  | Constant c, Interval (c1, c2)
+  | Interval (c1, c2), Constant c ->
+      inside c1 c2 c
+  | Interval (c1, c2), Interval (d1, d2) ->
+      intersects c1 c2 d1 d2
   | Lazy, Lazy -> true
   | Record _, Record _ -> true
   | Tuple lbls1, Tuple lbls2 -> lbls1 = lbls2
@@ -450,7 +545,7 @@ let extract_fields lbls arg =
 let simple_match_args discr head args =
   let open Patterns.Head in
   match head.pat_desc with
-  | Constant _ -> []
+  | Constant _ | Interval _ -> []
   | Construct _
   | Variant _
   | Tuple _
@@ -467,7 +562,7 @@ let simple_match_args discr head args =
       | Tuple lbls -> omega_list lbls
       | Variant { has_arg = false }
       | Any
-      | Constant _ -> []
+      | Constant _ | Interval _ -> []
       end
 
 (* Consider a pattern matrix whose first column has been simplified to contain
@@ -587,7 +682,7 @@ let set_args q r = match q with
     make_pat
       (Tpat_array (am, args)) q.pat_type q.pat_env::
     rest
-| {pat_desc=Tpat_constant _|Tpat_any} ->
+| {pat_desc=Tpat_constant _|Tpat_interval _|Tpat_any} ->
     q::r (* case any is used in matching.ml *)
 | {pat_desc = (Tpat_var _ | Tpat_alias _ | Tpat_or _); _} ->
     fatal_error "Parmatch.set_args"
@@ -840,9 +935,35 @@ let full_match closing env =  match env with
           (fun (tag,f) ->
             row_field_repr f = Rabsent || List.mem tag fields)
           (row_fields row)
-  | Constant Const_char _ ->
-      List.length env = 256
-  | Constant _
+  | Constant (Const_string _ | Const_float _) -> false
+  | Constant _ | Interval _ ->
+      (* Full coverage check for integer/char types:
+         Sort intervals by lower bound, then walk left-to-right
+         verifying contiguous coverage from the type minimum
+         (is_least_constant) to the type maximum (next_constant
+         returning None). A gap between consecutive intervals
+         means the match is not exhaustive. *)
+      let interv = sorted_intervals_of_env env in
+      begin match interv with
+      | [] -> assert false
+      | (l, _) :: _ when not (is_least_constant l) -> false
+      | (_, h) :: rem ->
+          let rec check_from max = function
+            | [] ->
+                begin match next_constant max with
+                | None -> true   (* max is greatest element of type *)
+                | Some _ -> false
+                end
+            | (l, _) :: _ when
+                (match next_constant max with
+                 | None -> false
+                 | Some next -> const_compare l next > 0) ->
+                false  (* gap between max and next interval *)
+            | (_, h) :: rem ->
+                check_from (const_max max h) rem
+          in
+          check_from h rem
+      end
   | Array _ -> false
   | Tuple _
   | Record _
@@ -866,7 +987,8 @@ let should_extend ext env = match ext with
           let path = get_constructor_type_path p.pat_type p.pat_env in
           Path.same path ext
       | Construct {cstr_tag=(Cstr_extension _)} -> false
-      | Constant _ | Tuple _ | Variant _ | Record _ | Array _ | Lazy -> false
+      | Constant _ | Interval _ | Tuple _ | Variant _ | Record _ | Array _
+      | Lazy -> false
       | Any -> assert false
       end
 end
@@ -1059,55 +1181,7 @@ let build_other ext env =
                     make_pat (Tpat_or (pat, p_res, None)) d.pat_type d.pat_env)
                   pat other_pats
             end
-      | Constant Const_char _ ->
-          let all_chars =
-            List.map
-              (fun (p,_) -> match p.pat_desc with
-              | Constant (Const_char c) -> c
-              | _ -> assert false)
-              env
-          in
-          let rec find_other i imax =
-            if i > imax then raise Not_found
-            else
-              let ci = Char.chr i in
-              if List.mem ci all_chars then
-                find_other (i+1) imax
-              else
-                make_pat (Tpat_constant (Const_char ci)) d.pat_type d.pat_env
-          in
-          let rec try_chars = function
-            | [] -> Patterns.omega
-            | (c1,c2) :: rest ->
-                try
-                  find_other (Char.code c1) (Char.code c2)
-                with
-                | Not_found -> try_chars rest
-          in
-          try_chars
-            [ 'a', 'z' ; 'A', 'Z' ; '0', '9' ;
-              ' ', '~' ; Char.chr 0 , Char.chr 255]
-      | Constant Const_int _ ->
-          build_other_constant
-            (function Constant(Const_int i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int i))
-            0 succ d env
-      | Constant Const_int32 _ ->
-          build_other_constant
-            (function Constant(Const_int32 i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int32 i))
-            0l Int32.succ d env
-      | Constant Const_int64 _ ->
-          build_other_constant
-            (function Constant(Const_int64 i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_int64 i))
-            0L Int64.succ d env
-      | Constant Const_nativeint _ ->
-          build_other_constant
-            (function Constant(Const_nativeint i) -> i | _ -> assert false)
-            (function i -> Tpat_constant(Const_nativeint i))
-            0n Nativeint.succ d env
-      | Constant Const_string _ ->
+      | Constant (Const_string _) ->
           build_other_constant
             (function Constant(Const_string (s, _, _)) -> String.length s
                     | _ -> assert false)
@@ -1115,12 +1189,101 @@ let build_other ext env =
                Tpat_constant
                  (Const_string(String.make i '*',Location.none,None)))
             0 succ d env
-      | Constant Const_float _ ->
+      | Constant (Const_float _) ->
           build_other_constant
             (function Constant(Const_float f) -> float_of_string f
                     | _ -> assert false)
             (function f -> Tpat_constant(Const_float (string_of_float f)))
             0.0 (fun f -> f +. 1.0) d env
+      | Constant _ | Interval _ ->
+          (* Find an uncovered value for the counter-example.
+             First, extract all constants/intervals and merge
+             overlapping or touching ranges.  Then search for
+             a gap:
+             - For chars, scan predefined human-readable ranges
+               so counter-examples prefer 'a'..'z' over '\000'.
+             - For integers, try zero first then scan after each
+               merged interval.
+             The assert false at the end of each branch is safe:
+             if no gap exists, full_match would have returned true
+             and we wouldn't be here. *)
+          let interv = sorted_intervals_of_env env in
+          (* Merge overlapping or touching intervals into a
+             minimal sorted list of disjoint ranges. *)
+          let merged =
+            List.fold_left (fun acc (l, h) ->
+              match acc with
+              | [] -> [(l, h)]
+              | (al, ah) :: rest ->
+                  match next_constant ah with
+                  | Some next when const_compare l next <= 0 ->
+                      (* overlapping or touching: extend *)
+                      (al, const_max ah h) :: rest
+                  | _ ->
+                      (* disjoint: start a new range *)
+                      (l, h) :: acc
+            ) [] interv
+            |> List.rev
+          in
+          let not_covered c =
+            not (List.exists (fun (l, h) -> inside l h c) merged)
+          in
+          let cst = fst (List.hd interv) in
+          let result = match cst with
+            | Const_char _ ->
+                (* Scan predefined ranges in human-readable order
+                   so that counter-examples like 'a' or '0' are
+                   preferred over '\000'. *)
+                let rec find_in_range i imax =
+                  if i > imax then None
+                  else
+                    let ci = Const_char (Char.chr i) in
+                    if not_covered ci then Some ci
+                    else find_in_range (i + 1) imax
+                in
+                let rec try_ranges = function
+                  | [] -> assert false
+                  | (c1, c2) :: rest ->
+                      match find_in_range (Char.code c1) (Char.code c2) with
+                      | Some c -> c
+                      | None -> try_ranges rest
+                in
+                try_ranges
+                  ['a', 'z'; 'A', 'Z'; '0', '9';
+                   ' ', '~'; Char.chr 0, Char.chr 255]
+            | _ ->
+                (* Try zero first (common case), then scan gaps
+                   just after the end of each merged interval,
+                   then before the first interval. *)
+                let const_zero = function
+                  | Const_int _ -> Const_int 0
+                  | Const_int32 _ -> Const_int32 0l
+                  | Const_int64 _ -> Const_int64 0L
+                  | Const_nativeint _ -> Const_nativeint 0n
+                  | _ -> assert false
+                in
+                let zero = const_zero cst in
+                if not_covered zero then zero
+                else
+                  let rec find_gap = function
+                    | [] -> None
+                    | (_, h) :: rest ->
+                        match next_constant h with
+                        | Some next when not_covered next -> Some next
+                        | _ -> find_gap rest
+                  in
+                  match find_gap merged with
+                  | Some c -> c
+                  | None ->
+                      (* Try before the first interval *)
+                      match merged with
+                      | (l, _) :: _ ->
+                          (match prev_constant l with
+                           | Some c -> c
+                           | None -> assert false)
+                      | [] -> assert false
+          in
+          make_pat (Tpat_constant result) d.pat_type d.pat_env
       | Array (am, _) ->
           let all_lengths =
             List.map
@@ -1140,7 +1303,8 @@ let build_other ext env =
    instance-less. *)
 let rec has_instance p = match p.pat_desc with
   | Tpat_variant (l,_,r) when is_absent l r -> false
-  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_) -> true
+  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_interval _
+  | Tpat_variant (_,None,_) -> true
   | Tpat_alias (p,_,_,_,_) | Tpat_variant (_,Some p,_) -> has_instance p
   | Tpat_or (p1,p2,_) -> has_instance p1 || has_instance p2
   | Tpat_construct (_,_,ps,_) | Tpat_array (_, ps) ->
@@ -1153,6 +1317,213 @@ let rec has_instance p = match p.pat_desc with
 and has_instances = function
   | [] -> true
   | q::rem -> has_instance q && has_instances rem
+
+(* Interval splitting: make intervals disjoint before analysis.
+
+   When the first column contains overlapping intervals, we split them
+   into disjoint sub-intervals so that simple_match can work correctly.
+   The splitting is only needed for columns containing constants/intervals
+   (not for strings or floats).
+
+   Legend and function map ([css] is the pivotal data structure):
+   - [css : (constant * constant) list] is a set of Column
+     Sub-intervalS: closed intervals [(lo, hi)], sorted by lower bound,
+     pairwise disjoint and non-touching. It is the disjoint
+     decomposition of all the bounds appearing in a column.
+   - [insert d1 d2 css] adds the interval [d1, d2] to [css], cutting
+     it (and the existing entries) at intersection boundaries so the
+     invariant is preserved.
+   - [inter_pat k p] folds the constant/interval bounds of pattern [p]
+     (looking through aliases and or-patterns) into the decomposition
+     [k]; [inters_pss pss] does so for the whole first column of the
+     matrix [pss].
+   - [split_interval p c1 c2 css] re-expresses the single interval
+     [c1, c2] as the list of [css] pieces it covers; [split_pat] lifts
+     this to a pattern (rebuilding aliases and or-patterns); and
+     [split_pss_qs pss qs] / [split_pss pss] rewrite the first column
+     of a matrix (and query row) accordingly.
+*)
+
+exception StringOrFloat
+exception NoConst
+
+(* Insert interval [d1..d2] into a sorted list of disjoint intervals,
+   splitting at intersection boundaries.
+
+   Invariant: [css] is sorted by lower bound and disjoint (no overlaps,
+   no touching). [insert] maintains this invariant.  Downstream code
+   (split_interval/split_pat/split_pss_qs) relies on this; violating
+   it produces malformed splits that silently corrupt exhaustiveness
+   and redundancy analysis for interval patterns.
+
+   When [d] overlaps an existing interval [c], we split into up to
+   3 parts: [before] (exclusive prefix of whichever starts first),
+   [mid] (the overlap), and [after] (suffix of whichever ends later).
+   The remaining suffix of [d] (after_d) is recursively inserted.
+   [prev_constant]/[next_constant] compute exclusive boundaries;
+   [None] means we're at a type edge so that part is empty.
+
+   WARNING: [loop] is parameterized on [d1 d2] deliberately: the recursive
+   call in the overlap branch must pass the *trimmed* suffix
+   [(ad1, ad2)], not the original bounds captured from the outer
+   scope.  Making [loop] close over [d1]/[d2] (and only taking [css]
+   as argument) would be a correctness bug -- the recursion would
+   compare against the original interval instead of its remaining
+   suffix, producing a [css] with overlapping and out-of-order
+   entries.  Do not try to "simplify" this by dropping the [d1 d2]
+   parameters from [loop]. *)
+let insert d1 d2 css =
+  let rec loop d1 d2 css =
+    match css with
+    | [] -> [(d1, d2)]
+    | (c1, c2) :: rem ->
+        if const_compare d2 c1 < 0 then
+          (* d entirely before c *)
+          (d1, d2) :: css
+        else if const_compare c2 d1 < 0 then
+          (* d entirely after c: pass d1/d2 through -- do NOT rely on
+             closure capture, it would be wrong after a trim below. *)
+          (c1, c2) :: loop d1 d2 rem
+        else begin
+          (* overlap: split into up to 3 parts *)
+          let before =
+            if const_compare d1 c1 < 0 then
+              match prev_constant c1 with
+              | Some pc1 -> [(d1, pc1)]
+              | None -> []
+            else if const_compare c1 d1 < 0 then
+              match prev_constant d1 with
+              | Some pd1 -> [(c1, pd1)]
+              | None -> []
+            else []
+          in
+          let mid_lo = const_max c1 d1 in
+          let mid_hi = const_min c2 d2 in
+          let after_c, after_d, rem' =
+            if const_compare c2 d2 < 0 then
+              (* c ends before d: trim d *)
+              match next_constant c2 with
+              | Some nc2 -> [], [(nc2, d2)], rem
+              | None -> [], [], rem
+            else if const_compare d2 c2 < 0 then
+              (* d ends before c: trim c *)
+              match next_constant d2 with
+              | Some nd2 -> [(nd2, c2)], [], rem
+              | None -> [], [], rem
+            else
+              (* same end *)
+              [], [], rem
+          in
+          before @ [(mid_lo, mid_hi)] @ after_c @
+            (* Recurse on the trimmed suffix [ad1..ad2] of d, into
+               the *remainder* of css.  NB: passing the trimmed
+               bounds explicitly is essential -- see the warning
+               note on the function above. *)
+            (match after_d with
+             | [(ad1, ad2)] -> loop ad1 ad2 rem'
+             | _ -> rem')
+        end
+  in
+  loop d1 d2 css
+
+(* Collect constant/interval bounds from a pattern *)
+let rec inter_pat k p =
+  match p.pat_desc with
+  | Tpat_constant (Const_string _ | Const_float _) -> raise StringOrFloat
+  | Tpat_constant c -> insert c c k
+  | Tpat_interval (c1, c2) -> insert c1 c2 k
+  | Tpat_any | Tpat_var _ -> raise NoConst
+  | Tpat_alias (p, _, _, _, _) -> inter_pat k p
+  | Tpat_or (p1, p2, _) -> inter_pat (inter_pat k p1) p2
+  | _ -> raise NoConst
+
+(* Collect all intervals from first column of pattern matrix *)
+let inters_pss pss =
+  List.fold_left
+    (fun k row ->
+       match row with
+       | [] -> k
+       | p :: _ ->
+           (try inter_pat k p with NoConst | StringOrFloat -> k))
+    [] pss
+
+(* Split a single interval [c1..c2] into sub-intervals aligned with the
+   disjoint decomposition [css].  [mk_itv] normalizes singleton intervals
+   to [Tpat_constant], maintaining the invariant that [Tpat_interval]
+   always has lo < hi strictly. *)
+let split_interval p c1 c2 css =
+  let mk_itv lo hi =
+    if const_compare lo hi = 0 then
+      { p with pat_desc = Tpat_constant lo }
+    else
+      { p with pat_desc = Tpat_interval (lo, hi) }
+  in
+  let rec loop c1 css =
+    match css with
+    | [] ->
+        if const_compare c1 c2 <= 0 then [mk_itv c1 c2] else []
+    | (l, h) :: rem ->
+        if const_compare c2 l < 0 then
+          (* remaining interval is before next split point *)
+          [mk_itv c1 c2]
+        else if const_compare c1 l < 0 then
+          (* gap before this split point, shouldn't happen after insert *)
+          mk_itv c1 (match prev_constant l with Some p -> p | None -> c1) ::
+          loop l css
+        else if const_compare c1 h <= 0 then
+          let hi = const_min c2 h in
+          mk_itv c1 hi ::
+          (match next_constant hi with
+           | Some next when const_compare next c2 <= 0 -> loop next rem
+           | _ -> [])
+        else
+          loop c1 rem
+  in
+  loop c1 css
+
+(* Split a pattern according to disjoint intervals *)
+let rec split_pat css p =
+  match p.pat_desc with
+  | Tpat_constant (Const_string _ | Const_float _) -> [p]
+  | Tpat_constant c -> split_interval p c c css
+  | Tpat_interval (c1, c2) -> split_interval p c1 c2 css
+  | Tpat_or (p1, p2, _) ->
+      split_pat css p1 @ split_pat css p2
+  | Tpat_alias (p', id, name, uid, ty) ->
+      List.map (fun sp ->
+        { p with pat_desc = Tpat_alias (sp, id, name, uid, ty) })
+        (split_pat css p')
+  | _ -> [p]
+
+(* Split first column of pss and qs according to disjoint intervals *)
+let split_pss_qs pss qs =
+  let css = inters_pss pss in
+  let css = match qs with
+    | [] -> css
+    | q :: _ -> (try inter_pat css q with NoConst | StringOrFloat -> css)
+  in
+  if css = [] then pss, qs
+  else
+    let split_row row =
+      match row with
+      | [] -> [row]
+      | p :: rest ->
+          let splits = split_pat css p in
+          List.map (fun sp -> sp :: rest) splits
+    in
+    let pss' = List.concat_map split_row pss in
+    let qs' = match qs with
+      | [] -> []
+      | q :: rest ->
+          let splits = split_pat css q in
+          (match splits with
+           | [_] -> qs  (* no splitting needed *)
+           | _ -> orify_many splits :: rest)
+    in
+    pss', qs'
+
+(* Split first column of pss only *)
+let split_pss pss = fst (split_pss_qs pss [])
 
 (*
   Core function :
@@ -1187,7 +1558,7 @@ and has_instances = function
    submatrices. All rows of [pss] are assumed to have the same length
    as [qs].
 *)
-let rec satisfiable pss qs = match pss with
+let rec satisfiable ?(split=true) pss qs = match pss with
 | [] -> has_instances qs
 | _  ->
     match qs with
@@ -1195,7 +1566,7 @@ let rec satisfiable pss qs = match pss with
     | q::qs ->
        match Patterns.General.(view q |> strip_vars).pat_desc with
        | `Or(q1,q2,_) ->
-          satisfiable pss (q1::qs) || satisfiable pss (q2::qs)
+          satisfiable ~split pss (q1::qs) || satisfiable ~split pss (q2::qs)
        | `Any ->
           let pss = simplify_first_col pss in
           if not (all_coherent (first_column pss)) then
@@ -1215,6 +1586,9 @@ let rec satisfiable pss qs = match pss with
                 constrs
           end
        | `Variant (l,_,r) when is_absent l r -> false
+       | (`Constant _ | `Interval _) when split ->
+          let pss, qs' = split_pss_qs pss (q :: qs) in
+          satisfiable ~split:false pss qs'
        | #Patterns.Simple.view as view ->
           let q = { q with pat_desc = view } in
           let pss = simplify_first_col pss in
@@ -1237,7 +1611,7 @@ let rec satisfiable pss qs = match pss with
 
    For considerations regarding the coherence check, see the comment on
    [satisfiable] above.  *)
-let rec list_satisfying_vectors pss qs =
+let rec list_satisfying_vectors ?(split=true) pss qs =
   match pss with
   | [] -> if has_instances qs then [qs] else []
   | _  ->
@@ -1246,8 +1620,8 @@ let rec list_satisfying_vectors pss qs =
       | q :: qs ->
          match Patterns.General.(view q |> strip_vars).pat_desc with
          | `Or(q1,q2,_) ->
-            list_satisfying_vectors pss (q1::qs) @
-            list_satisfying_vectors pss (q2::qs)
+            list_satisfying_vectors ~split pss (q1::qs) @
+            list_satisfying_vectors ~split pss (q2::qs)
          | `Any ->
             let pss = simplify_first_col pss in
             if not (all_coherent (first_column pss)) then
@@ -1290,6 +1664,10 @@ let rec list_satisfying_vectors pss qs =
                   end
           end
       | `Variant (l, _, r) when is_absent l r -> []
+      | (`Constant _ | `Interval _) when split ->
+          (* Split intervals before proceeding *)
+          let pss, qs' = split_pss_qs pss (q :: qs) in
+          list_satisfying_vectors ~split:false pss qs'
       | #Patterns.Simple.view as view ->
           let q = { q with pat_desc = view } in
           let hq, qargs = Patterns.Head.deconstruct q in
@@ -1414,6 +1792,7 @@ and exhaust_single_row ext p ps n =
   Seq.append sub_witnesses (Seq.delay p_witnesses)
 
 and specialize_and_exhaust ext pss n =
+  let pss = split_pss pss in
   let pss = simplify_first_col pss in
   if not (all_coherent (first_column pss)) then
     (* We're considering an ill-typed branch, we won't actually be able to
@@ -1501,6 +1880,7 @@ let rec pressure_variants tdefs = function
   | []    -> false
   | []::_ -> true
   | pss   ->
+      let pss = split_pss pss in
       let pss = simplify_first_col pss in
       if not (all_coherent (first_column pss)) then
         true
@@ -1739,6 +2119,9 @@ let rec every_satisfiables pss qs = match qs.active with
           every_satisfiables (push_or_column pss) (push_or qs)
     | `Variant (l,_,r) when is_absent l r -> (* Ah Jacques... *)
         Unused
+    | (`Constant _ | `Interval _) ->
+        (* Intervals/constants: delay, let satisfiable handle it *)
+        every_satisfiables (push_no_or_column pss) (push_no_or qs)
     | #Patterns.Simple.view as view ->
         let q = { q with pat_desc = view } in
         (* standard case, filter matrix *)
@@ -1805,6 +2188,34 @@ let rec le_pat p q =
   | Tpat_alias(p,_,_,_,_), _ -> le_pat p q
   | _, Tpat_alias(q,_,_,_,_) -> le_pat p q
   | Tpat_constant(c1), Tpat_constant(c2) -> const_compare c1 c2 = 0
+  (* [le_pat p q] means: "q is subsumed by p", i.e.
+     forall V, V matches q implies V matches p.
+
+     The constant/interval and interval/constant arms below are NOT
+     symmetric, so they MUST remain two separate match arms (do not
+     merge them into a single [inside c1 c2 c] case: that would
+     wrongly assert that a singleton constant subsumes the whole
+     interval whenever the constant falls inside it, and corrupts
+     [get_mins] used by [check_partial]/[check_unused]).
+
+     * [{c}] subsumed by [[c1,c2]]  (Tpat_constant c, Tpat_interval):
+       "every value matching [c1,c2] also matches {c}".  True only
+       when the interval is a singleton covering [c], i.e.
+       c1 = c2 = c.  [Tpat_interval] has the invariant c1 < c2
+       (normalized in typecore.ml), so this arm yields [false] in
+       practice; we keep the explicit test so correctness does not
+       hinge on the invariant being preserved elsewhere.
+
+     * [[c1,c2]] subsumed by [{c}]  (Tpat_interval, Tpat_constant c):
+       "every value matching {c} also matches [c1,c2]".  True iff
+       [c] is in [c1,c2], i.e. [inside c1 c2 c].
+
+     * [[c1,c2]] subsumed by [[c3,c4]]: iff c1 <= c3 && c4 <= c2. *)
+  | Tpat_constant c, Tpat_interval (c1, c2) ->
+      const_compare c1 c = 0 && const_compare c2 c = 0
+  | Tpat_interval (c1, c2), Tpat_constant c -> inside c1 c2 c
+  | Tpat_interval (c1, c2), Tpat_interval (c3, c4) ->
+      const_compare c3 c1 >= 0 && const_compare c2 c4 >= 0
   | Tpat_construct(_,c1,ps,_), Tpat_construct(_,c2,qs,_) ->
       Data_types.equal_constr c1 c2 && le_pats ps qs
   | Tpat_variant(l1,Some p1,_), Tpat_variant(l2,Some p2,_) ->
@@ -1866,6 +2277,22 @@ let rec lub p q = match p.pat_desc,q.pat_desc with
 | Tpat_or (p1,p2,_),_     -> orlub p1 p2 q
 | _,Tpat_or (q1,q2,_)     -> orlub q1 q2 p (* Thanks god, lub is commutative *)
 | Tpat_constant c1, Tpat_constant c2 when const_compare c1 c2 = 0 -> p
+(* lub computes intersection: the set of values matched by both p and q.
+   constant /\ interval = constant (if inside), else Empty (falls through).
+   interval /\ interval = [max(lo), min(hi)], normalized to Tpat_constant
+   when lo = hi to avoid degenerate Tpat_interval(c,c). *)
+| ( Tpat_constant c, Tpat_interval (c1, c2)
+  | Tpat_interval (c1, c2), Tpat_constant c )
+    when inside c1 c2 c ->
+    make_pat (Tpat_constant c) p.pat_type p.pat_env
+| Tpat_interval (c1, c2), Tpat_interval (c3, c4)
+    when intersects c1 c2 c3 c4 ->
+    let lo = const_max c1 c3 and hi = const_min c2 c4 in
+    let desc =
+      if const_compare lo hi = 0 then Tpat_constant lo
+      else Tpat_interval (lo, hi)
+    in
+    make_pat desc p.pat_type p.pat_env
 | Tpat_tuple ps, Tpat_tuple qs ->
     let rs = tuple_lubs ps qs in
     make_pat (Tpat_tuple rs) p.pat_type p.pat_env
@@ -2069,7 +2496,8 @@ let rec collect_paths_from_pat r p = match p.pat_desc with
       collect_paths_from_pat
       (if extendable_path path then add_path path r else r)
       ps
-| Tpat_any|Tpat_var _|Tpat_constant _| Tpat_variant (_,None,_) -> r
+| Tpat_any|Tpat_var _|Tpat_constant _|Tpat_interval _
+| Tpat_variant (_,None,_) -> r
 | Tpat_tuple ps ->
     List.fold_left (fun r (_, p) -> collect_paths_from_pat r p) r ps
 | Tpat_array (_, ps) | Tpat_construct (_, {cstr_tag=Cstr_extension _}, ps, _)->
@@ -2214,6 +2642,7 @@ let inactive ~partial pat =
             | Const_int _ | Const_char _ | Const_float _
             | Const_int32 _ | Const_int64 _ | Const_nativeint _ -> true
           end
+        | Tpat_interval _ -> true
         | Tpat_tuple ps ->
             List.for_all (fun (_,p) -> loop p) ps
         | Tpat_construct (_, _, ps, _) | Tpat_array (Immutable, ps) ->

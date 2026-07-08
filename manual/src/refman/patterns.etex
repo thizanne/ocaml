@@ -20,6 +20,7 @@ pattern:
   | pattern '::' pattern
   | '[|' pattern { ';' pattern } [ ';' ] '|]'
   | char-literal '..' char-literal
+  | integer-literal '..' integer-literal
   | 'lazy' pattern
   | 'exception' pattern
   | module-path '.(' pattern ')'
@@ -291,6 +292,31 @@ let classify_char = function
   | '0'..'9' -> Digit
   | _ -> Other;;
 \end{caml_example}
+
+Range patterns also accept integer literals of type @"int"@, @"int32"@,
+@"int64"@, and @"nativeint"@ (since OCaml 5.6).
+The pattern @c ".." d@ matches all values
+\var{x} such that \var{c} $\leq$ \var{x} and \var{x} $\leq$ \var{d}.
+
+\begin{caml_example}{toplevel}
+let http_status_class = function
+  | 200 -> "OK"
+  | 201 .. 299 -> "Success"
+  | 301 | 302 | 307 | 308 -> "Redirect"
+  | 400 .. 499 -> "Client error"
+  | 500 .. 599 -> "Server error"
+  | _ -> "Unknown";;
+\end{caml_example}
+
+The bounds must be integer literals; arbitrary expressions or
+identifiers such as @'max_int'@ are not allowed. Beware that the
+lower bound and the @".."@ symbol must be separated by at least one
+space: without it, as in @'0..10'@, the lexer reads @'0.'@ as a
+floating-point literal and the pattern is rejected.
+
+Range patterns follow the usual first-match rule: when the ranges of
+several cases overlap, a matching value selects the first case whose
+range contains it.
 
 \subsubsection{sss:pat-lazy}{Lazy patterns}
 

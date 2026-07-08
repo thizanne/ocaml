@@ -1133,7 +1133,7 @@ and build_as_type_aux (env : Env.t) p =
           newty (Tvariant (create_row ~fields ~fixed ~name
                              ~closed:false ~more:(newvar())))
       end
-  | Tpat_any | Tpat_var _ | Tpat_constant _
+  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_interval _
   | Tpat_array _ | Tpat_lazy _ -> p.pat_type
 
 (* Constraint solving during typing of patterns *)
@@ -2213,34 +2213,58 @@ and type_pat_aux
         pat_attributes = sp.ppat_attributes;
         pat_env = !!penv }
   | Ppat_interval (c1, c2) ->
-      (* Interval patterns are only accepted between character
-         literals; any other bound raises [Invalid_interval] at that
-         bound's location. The interval is expanded into an or-pattern
-         enumerating every character between the bounds (inclusive;
-         the bounds are swapped if [c1 > c2], so 'z'..'a' is the same
-         as 'a'..'z'). The generated sub-patterns carry ghost
-         locations; the resulting pattern keeps the original location
-         and is then type-checked as an ordinary pattern. *)
-      let open Ast_helper in
-      let get_bound = function
-        | {pconst_desc = Pconst_char c; _} -> c
-        | {pconst_loc = loc; _} ->
-            Error.log_and_raise loc !!penv Invalid_interval
+      (* Interval patterns are accepted between two character literals
+         or two integer literals (int, int32, int64, nativeint); any
+         other bound raises [Invalid_interval] at that bound's
+         location. The bounds are swapped if [c1 > c2], so 1..0 is the
+         same as 0..1. Character intervals are expanded into an
+         or-pattern enumerating every character between the bounds
+         (inclusive), with ghost locations on the generated
+         sub-patterns, and re-type-checked as an ordinary pattern.
+         Integer intervals produce [Tpat_interval] directly
+         ([Tpat_constant] when the bounds are equal). *)
+      let get_bound c =
+        let cst = constant_or_raise !!penv c.pconst_loc c in
+        begin match cst with
+        | Const_string _ | Const_float _ ->
+            Error.log_and_raise c.pconst_loc !!penv Invalid_interval
+        | _ -> ()
+        end;
+        unify_pat_types c.pconst_loc !!penv (type_constant cst) expected_ty;
+        cst
       in
-      let c1 = get_bound c1 in
-      let c2 = get_bound c2 in
-      let gloc = {loc with Location.loc_ghost=true} in
-      let rec loop c1 c2 =
-        if c1 = c2 then Pat.constant ~loc:gloc (Const.char ~loc:gloc c1)
-        else
-          Pat.or_ ~loc:gloc
-            (Pat.constant ~loc:gloc (Const.char ~loc:gloc c1))
-            (loop (Char.chr(Char.code c1 + 1)) c2)
+      let cst1 = get_bound c1 in
+      let cst2 = get_bound c2 in
+      let cst1, cst2 =
+        if Parmatch.const_compare cst1 cst2 <= 0 then cst1, cst2
+        else cst2, cst1
       in
-      let p = if c1 <= c2 then loop c1 c2 else loop c2 c1 in
-      let p = {p with ppat_loc=loc} in
-      type_pat tps category p expected_ty
-        (* TODO: record 'extra' to remember about interval *)
+      begin match cst1, cst2 with
+      | Const_char ch1, Const_char ch2 ->
+          (* Still expand char intervals to or-patterns *)
+          let open Ast_helper in
+          let gloc = {loc with Location.loc_ghost=true} in
+          let rec loop c1 c2 =
+            if c1 = c2 then Pat.constant ~loc:gloc (Const.char ~loc:gloc c1)
+            else
+              Pat.or_ ~loc:gloc
+                (Pat.constant ~loc:gloc (Const.char ~loc:gloc c1))
+                (loop (Char.chr(Char.code c1 + 1)) c2)
+          in
+          let p = {(loop ch1 ch2) with ppat_loc=loc} in
+          type_pat tps category p expected_ty
+      | _ ->
+          let pat_desc =
+            if Parmatch.const_compare cst1 cst2 = 0 then Tpat_constant cst1
+            else Tpat_interval (cst1, cst2)
+          in
+          rvp @@ solve_expected {
+            pat_desc;
+            pat_loc = loc; pat_extra=[];
+            pat_type = type_constant cst1;
+            pat_attributes = sp.ppat_attributes;
+            pat_env = !!penv }
+      end
   | Ppat_tuple (spl, closed) ->
       assert (closed = Open || List.length spl >= 2);
       Option.iter
@@ -2897,6 +2921,11 @@ let rec check_counter_example_pat
   | Tpat_constant cst ->
       let cst = constant_or_raise !!penv loc (Untypeast.constant cst) in
       k @@ solve_expected (mp (Tpat_constant cst) ~pat_type:(type_constant cst))
+  | Tpat_interval (c1, c2) ->
+      let c1 = constant_or_raise !!penv loc (Untypeast.constant c1) in
+      let c2 = constant_or_raise !!penv loc (Untypeast.constant c2) in
+      k @@ solve_expected
+        (mp (Tpat_interval (c1, c2)) ~pat_type:(type_constant c1))
   | Tpat_tuple tpl ->
       assert (List.length tpl >= 2);
       let expected_tys = solve_Ppat_tuple loc penv tpl expected_ty in
@@ -8598,7 +8627,7 @@ let report_error ~loc env =
         reason_str Style.inline_code name
   | Invalid_interval ->
       Location.errorf ~loc
-        "@[Only character intervals are supported in patterns.@]"
+        "@[Only character and integer intervals are supported in patterns.@]"
   | Invalid_for_loop_index ->
       Location.errorf ~loc
         "@[Invalid for-loop index: only variables and %a are allowed.@]"

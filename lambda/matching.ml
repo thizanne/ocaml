@@ -342,8 +342,8 @@ end = struct
           | `Or _ as or_view -> stop orpat or_view
           | other_view -> continue orpat other_view
         )
-      | ( `Constant _ | `Tuple _ | `Construct _ | `Variant _ | `Array _
-        | `Lazy _ ) as view ->
+      | ( `Constant _ | `Interval _ | `Tuple _ | `Construct _ | `Variant _
+        | `Array _ | `Lazy _ ) as view ->
           stop p view
     in
     aux cl
@@ -377,6 +377,7 @@ end = struct
       match p.pat_desc with
       | `Any -> `Any
       | `Constant cst -> `Constant cst
+      | `Interval itv -> `Interval itv
       | `Tuple ps ->
           `Tuple (List.map (fun (label, p) -> label, alpha_pat env p) ps)
       | `Construct (cstr, cst_descr, args) ->
@@ -525,11 +526,22 @@ let matcher discr (p : Simple.pattern) rem =
   let open Patterns.Head in
   match (discr.pat_desc, ph.pat_desc) with
   | Any, _ -> rem
-  | ( ( Constant _ | Construct _ | Variant _ | Lazy | Array _ | Record _
-      | Tuple _ ),
+  | ( ( Constant _ | Interval _ | Construct _ | Variant _ | Lazy | Array _
+      | Record _ | Tuple _ ),
       Any ) ->
       omegas @ rem
   | Constant cst, Constant cst' -> yesif (const_compare cst cst' = 0)
+  | Constant c, Interval (c1, c2) | Interval (c1, c2), Constant c ->
+      yesif (const_compare c1 c <= 0 && const_compare c c2 <= 0)
+  | Interval (c1, c2), Interval (d1, d2) ->
+      (* some value matches both intervals iff they intersect; keeping
+         intersecting rows over-approximates "may match", as required
+         for context and jump-summary computation (cf. the comment
+         above [matcher]) *)
+      yesif (const_compare c1 d2 <= 0 && const_compare d1 c2 <= 0)
+  | Interval _, (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _)
+  | (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _), Interval _
+    -> no ()
   | Constant _, (Construct _ | Variant _ | Lazy | Array _ | Record _ | Tuple _)
     ->
       no ()
@@ -1497,13 +1509,18 @@ let can_group discr pat =
   let open Patterns.Head in
   match (discr.pat_desc, (Simple.head pat).pat_desc) with
   | Any, Any
-  | Constant (Const_int _), Constant (Const_int _)
-  | Constant (Const_char _), Constant (Const_char _)
+  | (Constant (Const_int _) | Interval (Const_int _, _)),
+    (Constant (Const_int _) | Interval (Const_int _, _))
+  | (Constant (Const_char _) | Interval (Const_char _, _)),
+    (Constant (Const_char _) | Interval (Const_char _, _))
   | Constant (Const_string _), Constant (Const_string _)
   | Constant (Const_float _), Constant (Const_float _)
-  | Constant (Const_int32 _), Constant (Const_int32 _)
-  | Constant (Const_int64 _), Constant (Const_int64 _)
-  | Constant (Const_nativeint _), Constant (Const_nativeint _) ->
+  | (Constant (Const_int32 _) | Interval (Const_int32 _, _)),
+    (Constant (Const_int32 _) | Interval (Const_int32 _, _))
+  | (Constant (Const_int64 _) | Interval (Const_int64 _, _)),
+    (Constant (Const_int64 _) | Interval (Const_int64 _, _))
+  | (Constant (Const_nativeint _) | Interval (Const_nativeint _, _)),
+    (Constant (Const_nativeint _) | Interval (Const_nativeint _, _)) ->
       true
   | Construct { cstr_tag = Cstr_extension (p1, _) },
     Construct { cstr_tag = Cstr_extension (p2, _) }
@@ -1526,6 +1543,7 @@ let can_group discr pat =
       | Constant
           ( Const_int _ | Const_char _ | Const_string _ | Const_float _
           | Const_int32 _ | Const_int64 _ | Const_nativeint _ )
+      | Interval _
       | Construct _ | Tuple _ | Record _ | Array _ | Variant _ | Lazy ) ) ->
       false
 
@@ -1739,10 +1757,46 @@ and split_no_or cls args def k =
      [safe_before] allows it to commute with the already-rejected
      clauses; the rejected clauses form the next pm, reached through an
      exit added to the default environment. *)
+  (* [can_group] compares each candidate with the group discriminator
+     only, which is sound when admission is transitive. Interval keys
+     break transitivity: two intervals can each be disjoint from the
+     discriminator yet overlap each other, and the exact-key cell
+     division of [divide_constant_interval] is only correct when all
+     keys in a group are pairwise equal or disjoint. [keys] enforces
+     that invariant: a constant or interval head is only admitted if
+     it is equal to or disjoint from every key already in the group.
+     Rejected clauses go to the next matrix, chained by an exit, which
+     preserves first-match-wins (as for extension constructors). *)
+  let key_compatible (a1, a2) (b1, b2) =
+    (* equal, or disjoint *)
+    (const_compare a1 b1 = 0 && const_compare a2 b2 = 0)
+    || const_compare a2 b1 < 0
+    || const_compare b2 a1 < 0
+  in
+  (* Two constants are always pairwise equal or disjoint, so they
+     never need to be checked against each other: constants are only
+     scanned when an interval candidate arrives (intervals are rare),
+     and constant candidates only scan the accumulated intervals
+     (none in an interval-free match). *)
+  let keys_compatible (consts, itvs) p =
+    match (Simple.head p).pat_desc with
+    | Patterns.Head.Constant c ->
+        List.for_all (key_compatible (c, c)) itvs
+    | Patterns.Head.Interval (c1, c2) ->
+        List.for_all (key_compatible (c1, c2)) itvs
+        && List.for_all (fun c -> key_compatible (c1, c2) (c, c)) consts
+    | _ -> true
+  in
+  let add_key ((consts, itvs) as keys) p =
+    match (Simple.head p).pat_desc with
+    | Patterns.Head.Constant c -> (c :: consts, itvs)
+    | Patterns.Head.Interval (c1, c2) -> (consts, (c1, c2) :: itvs)
+    | _ -> keys
+  in
   let rec split (cls : Simple.clause list) =
     let discr = what_is_first_case cls in
-    collect discr [] [] cls
-  and collect group_discr rev_yes rev_no = function
+    collect discr ([], []) [] [] cls
+  and collect group_discr keys rev_yes rev_no = function
     | [ (((p, ps), _) as cl) ]
       when rev_yes <> [] && simple_omega_like p && List.for_all omega_like ps ->
         (* This enables an extra division in some frequent cases:
@@ -1755,16 +1809,17 @@ and split_no_or cls args def k =
 
            This optimisation is tested in the first part of
            testsuite/tests/basic/patmatch_split_no_or.ml *)
-        collect group_discr rev_yes (cl :: rev_no) []
+        collect group_discr keys rev_yes (cl :: rev_no) []
     | (((p, _), _) as cl) :: rem ->
-        if can_group group_discr p && safe_before cl rev_no then
-          collect group_discr (cl :: rev_yes) rev_no rem
+        if can_group group_discr p && keys_compatible keys p
+           && safe_before cl rev_no then
+          collect group_discr (add_key keys p) (cl :: rev_yes) rev_no rem
         else if should_split group_discr then (
           assert (rev_no = []);
           let yes = List.rev rev_yes in
           insert_split group_discr yes (cl :: rem) def k
         ) else
-          collect group_discr rev_yes (cl :: rev_no) rem
+          collect group_discr keys rev_yes (cl :: rev_no) rem
     | [] ->
         let yes = List.rev rev_yes and no = List.rev rev_no in
         insert_split group_discr yes no def k
@@ -2140,6 +2195,26 @@ let divide_constant ctx m =
     get_expr_args_constant
     (fun c d -> const_compare c d = 0)
     (get_key_constant "divide")
+    get_pat_args_constant ctx m
+
+(* Matching against a constant or interval *)
+
+let get_key_constant_interval caller = function
+  | { pat_desc = Tpat_constant cst } -> (cst, cst)
+  | { pat_desc = Tpat_interval (cst1, cst2) } -> (cst1, cst2)
+  | p ->
+      fatal_errorf "BAD(%s): %a"
+        caller
+        pretty_pat p
+
+let eq_key_constant_interval (c1, c2) (d1, d2) =
+  const_compare c1 d1 = 0 && const_compare c2 d2 = 0
+
+let divide_constant_interval ctx m =
+  divide
+    get_expr_args_constant
+    eq_key_constant_interval
+    (get_key_constant_interval "divide")
     get_pat_args_constant ctx m
 
 (* Matching against a constructor *)
@@ -3225,34 +3300,17 @@ let mk_failaction_pos arg_partial seen ctx defs =
   )
 
 (* [combine_constant] assembles the dispatch code for a column of
-   constants, which the division invariant guarantees to be pairwise
-   distinct (hence disjoint): an integer switch for [Const_int] and
-   [Const_char], a string switch for [Const_string], and comparison
-   test sequences for floats and boxed integers. Disjointness allows
-   reordering the cases freely; every strategy sorts them. *)
+   string or float constants, which the division invariant guarantees
+   to be pairwise distinct (hence disjoint): a string switch for
+   [Const_string], a comparison test sequence for [Const_float].
+   Disjointness allows reordering the cases freely; both strategies
+   sort them. All other constants go through
+   [combine_constant_interval]. *)
 let combine_constant loc arg cst partial ctx def
     (const_lambda_list, total, _pats) =
   let fail, local_jumps = mk_failaction_neg partial ctx def in
   let lambda1 =
     match (cst : Asttypes.constant) with
-    | Const_int _ ->
-        let int_lambda_list =
-          List.map
-            (function
-              | Asttypes.Const_int n, l -> (n, l)
-              | _ -> assert false)
-            const_lambda_list
-        in
-        call_switcher loc fail arg int_lambda_list
-    | Const_char _ ->
-        let int_lambda_list =
-          List.map
-            (function
-              | Asttypes.Const_char c, l -> (Char.code c, l)
-              | _ -> assert false)
-            const_lambda_list
-        in
-        call_switcher loc fail arg ~low:0 ~high:255 int_lambda_list
     | Const_string _ ->
         (* Note as the bytecode compiler may resort to dichotomic search,
    the clauses of stringswitch  are sorted with duplicates removed.
@@ -3272,21 +3330,150 @@ let combine_constant loc arg cst partial ctx def
     | Const_float _ ->
         make_test_sequence loc fail (Pfloatcomp CFneq) (Pfloatcomp CFlt) arg
           const_lambda_list
-    | Const_int32 _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pint32, Cne))
-          (Pbintcomp (Pint32, Clt))
-          arg const_lambda_list
-    | Const_int64 _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pint64, Cne))
-          (Pbintcomp (Pint64, Clt))
-          arg const_lambda_list
+    | Const_int _ | Const_char _ | Const_int32 _ | Const_int64 _
     | Const_nativeint _ ->
-        make_test_sequence loc fail
-          (Pbintcomp (Pnativeint, Cne))
-          (Pbintcomp (Pnativeint, Clt))
-          arg const_lambda_list
+        (* routed to [combine_constant_interval] *)
+        Misc.fatal_error "Matching.combine_constant"
+  in
+  (lambda1, Jumps.union local_jumps total)
+
+let combine_constant_interval loc arg cst partial ctx def
+    (const_lambda_list, total, _pats) =
+  let fail, local_jumps = mk_failaction_neg partial ctx def in
+  (* The grouping pass ([split_no_or]) guarantees that the keys of
+     [const_lambda_list] are pairwise equal or disjoint, and [divide]
+     merges equal keys into a single cell (keeping their actions in
+     source order). The keys are therefore pairwise disjoint here:
+     dispatch order is free, so we sort by lower bound and use a
+     binary search. Overlapping arms never share a division; they are
+     placed in separate matrices chained by exits, which preserves
+     first-match-wins semantics. *)
+  let sorted =
+    List.sort
+      (fun ((lo1, _), _) ((lo2, _), _) -> const_compare lo1 lo2)
+      const_lambda_list
+  in
+  let () =
+    let rec check_disjoint = function
+      | ((_, hi1), _) :: ((((lo2, _), _) :: _) as rest) ->
+          if const_compare hi1 lo2 >= 0 then
+            Misc.fatal_error
+              "combine_constant_interval: overlapping intervals";
+          check_disjoint rest
+      | [] | [ _ ] -> ()
+    in
+    check_disjoint sorted
+  in
+  (* Dispatch on the (disjoint, sorted) intervals: a binary search on
+     the lower bounds down to chains of at most three interval tests.
+     When there is no failure action (the match is total), a value
+     reaching a chain necessarily belongs to one of its intervals, so
+     the last test of each chain is omitted. *)
+  let bound_check_chain ~mk_eq ~mk_le ~mk_lt =
+    let check_one (lo, hi) l rest =
+      if const_compare lo hi = 0 then
+        Lifthenelse (
+          Lprim (mk_eq, [arg; lambda_of_const lo], loc),
+          l, rest)
+      else
+        Lifthenelse (
+          Lprim (Psequand, [
+            Lprim (mk_le, [lambda_of_const lo; arg], loc);
+            Lprim (mk_le, [arg; lambda_of_const hi], loc)
+          ], loc),
+          l, rest)
+    in
+    let rec chain entries =
+      match entries, fail with
+      | [], Some f -> f
+      | [ ((_, _), l) ], None -> l
+      | ((lo, hi), l) :: rest, _ -> check_one (lo, hi) l (chain rest)
+      | [], None -> assert false
+    in
+    let rec search n entries =
+      if n >= 4 then
+        let half = n / 2 in
+        let list1, list2 = rev_split_at half entries in
+        let (pivot_lo, _), _ = List.hd list2 in
+        Lifthenelse (
+          Lprim (mk_lt, [arg; lambda_of_const pivot_lo], loc),
+          search half list1,
+          search (n - half) list2)
+      else
+        chain entries
+    in
+    search (List.length sorted) sorted
+  in
+  let lambda1 =
+    match (cst : Asttypes.constant) with
+    | Const_int _ ->
+        (* Expand small int intervals into individual switch entries;
+           larger ones use bound checks instead. *)
+        let max_expand = 256 in
+        let all_small =
+          List.for_all
+            (function
+              | (Asttypes.Const_int lo, Asttypes.Const_int hi), _ ->
+                  (* Since hi >= lo, hi - lo is non-negative unless
+                     it overflows (wraps to negative).  The first
+                     check catches that. *)
+                  hi - lo >= 0 && hi - lo < max_expand
+              | _ -> false)
+            const_lambda_list
+        in
+        if all_small then begin
+          (* the intervals are disjoint: no deduplication is needed *)
+          let int_lambda_list =
+            List.concat_map
+              (function
+                | (Asttypes.Const_int lo, Asttypes.Const_int hi), l ->
+                    let points = ref [] in
+                    for i = hi downto lo do
+                      points := (i, l) :: !points
+                    done;
+                    !points
+                | _ ->
+                    Misc.fatal_error
+                      "combine_constant_interval: \
+                       expected Const_int pair")
+              const_lambda_list
+          in
+          call_switcher loc fail arg int_lambda_list
+        end else
+          bound_check_chain
+            ~mk_eq:(Pintcomp Ceq) ~mk_le:(Pintcomp Cle)
+            ~mk_lt:(Pintcomp Clt)
+    | Const_int32 _ | Const_int64 _ | Const_nativeint _ ->
+        let bint_kind = match (cst : Asttypes.constant) with
+          | Const_int32 _ -> Pint32
+          | Const_int64 _ -> Pint64
+          | Const_nativeint _ -> Pnativeint
+          | _ -> assert false
+        in
+        bound_check_chain
+          ~mk_eq:(Pbintcomp (bint_kind, Ceq))
+          ~mk_le:(Pbintcomp (bint_kind, Cle))
+          ~mk_lt:(Pbintcomp (bint_kind, Clt))
+    | Const_char _ ->
+        (* Real char intervals are expanded to or-patterns during
+           type checking and never reach the lambda layer: only
+           degenerate [(c, c)] keys (plain char constants) occur
+           here. *)
+        let int_lambda_list =
+          List.map
+            (function
+              | (Asttypes.Const_char lo, Asttypes.Const_char hi), l
+                when lo = hi ->
+                  (Char.code lo, l)
+              | _ ->
+                  Misc.fatal_error
+                    "combine_constant_interval: char interval")
+            const_lambda_list
+        in
+        call_switcher loc fail arg ~low:0 ~high:255 int_lambda_list
+    | Const_string _ | Const_float _ ->
+        Misc.fatal_error
+          "combine_constant_interval: string/float not supported"
   in
   (lambda1, Jumps.union local_jumps total)
 
@@ -4071,13 +4258,19 @@ and do_compile_matching ~scopes repr partial ctx pmh =
           compile_no_test
             (divide_record ~scopes lbl.lbl_all ph)
             Context.combine
-      | Constant cst ->
-          (* Routes all constant heads: int, char, string, float,
-             int32, int64, nativeint. [cst] is only a representative
-             used to select the strategy in [combine_constant]. *)
+      | Constant (Const_string _ | Const_float _ as cst) ->
+          (* Strings and floats keep the historic dispatch; they
+             cannot occur in intervals. *)
           compile_test
             divide_constant
             (combine_constant ploc arg cst arg_partial)
+      | Constant cst | Interval (cst, _) ->
+          (* All other constant heads, and intervals, share one
+             division: [cst] is only a representative used to select
+             the strategy in [combine_constant_interval]. *)
+          compile_test
+            divide_constant_interval
+            (combine_constant_interval ploc arg cst arg_partial)
       | Construct cstr ->
           compile_test
             (divide_constructor ~scopes)
@@ -4424,7 +4617,8 @@ let flatten_simple_pattern size (p : Simple.pattern) =
   | `Record _
   | `Lazy _
   | `Construct _
-  | `Constant _ ->
+  | `Constant _
+  | `Interval _ ->
       (* All calls to this function originate from [do_for_multiple_match],
          where we know that the scrutinee is a tuple literal.
 
